@@ -88,7 +88,5 @@ struct ModuleData {
     size_t nextTempNum;
 };
 
-struct ValueData *generateToken(struct Token *token, struct ModuleData *module,
-                                bool charPtrInsteadOfString);
 int generate(struct Token *body, const char *filename,
              const char *inputFilename);

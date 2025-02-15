@@ -7,8 +7,8 @@
 #include <tokenize.h>
 
 int main(int argc, char **argv) {
-    const char *filenameIn = "D:/Documents/C/Compiler/in.sao";
-    const char *filenameOut = "D:/Documents/C/Compiler/out.ll";
+    const char *filenameIn = "D:/Documents/C/Custom-Lisp-Compiler/in.sao";
+    const char *filenameOut = "D:/Documents/C/Custom-Lisp-Compiler/out.ll";
     FILE *file = fopen(filenameIn, "r");
     if (file == NULL) {
         fprintf(stderr, "Error opening input file %s\n", filenameIn);

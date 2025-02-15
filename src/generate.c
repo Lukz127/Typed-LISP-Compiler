@@ -5,7 +5,8 @@ LLVMValueRef mallocFunc;
 
 LLVMTypeRef *generateType(struct TypeData *type, struct ModuleData *module);
 struct ValueData *generateToken(struct Token *token, struct ModuleData *module,
-                                bool charPtrInsteadOfString);
+                                bool charPtrInsteadOfString,
+                                bool falseInsteadOfNil);
 LLVMValueRef *generateTokenOfType(struct Token *token, struct TypeData type,
                                   struct ModuleData *module);
 bool cmptype(struct TypeData *cmpType, struct TypeData *type, size_t lineNum,
@@ -201,7 +202,7 @@ struct ValueData *generateFuncCall(struct Token *token,
             continue;
         }
         if (i > funcData->numArgs) {
-            struct ValueData *val = generateToken(token2, module, false);
+            struct ValueData *val = generateToken(token2, module, false, true);
             LLVMValueRef *llvmVal = val->value;
             free(val);
             numExtraArgs++;
@@ -636,7 +637,8 @@ LLVMValueRef *generateVarDef(struct Token *token, struct ModuleData *module,
         LLVMValueRef *llvmInitValue;
         if (type->type == NULLABLE) {
             struct ValueData *val = generateToken(
-                initValue, module, type->otherType->type != STRING);
+                initValue, module, type->otherType->type != STRING,
+                type->otherType->type == BOOL);
             if (val == NULL) {
                 return NULL;
             }
@@ -920,12 +922,12 @@ struct ValueData *generateAdd(struct Token *token, struct ModuleData *module,
         return NULL;
     }
     struct ValueData *left =
-        generateToken(((struct Token **)token->data)[1], module, false);
+        generateToken(((struct Token **)token->data)[1], module, false, true);
     if (left == NULL) {
         return NULL;
     }
     struct ValueData *right =
-        generateToken(((struct Token **)token->data)[2], module, false);
+        generateToken(((struct Token **)token->data)[2], module, false, true);
     if (right == NULL) {
         return NULL;
     }
@@ -1026,12 +1028,12 @@ struct ValueData *generateSubtract(struct Token *token,
         return NULL;
     }
     struct ValueData *left =
-        generateToken(((struct Token **)token->data)[1], module, false);
+        generateToken(((struct Token **)token->data)[1], module, false, true);
     if (left == NULL) {
         return NULL;
     }
     struct ValueData *right =
-        generateToken(((struct Token **)token->data)[2], module, false);
+        generateToken(((struct Token **)token->data)[2], module, false, true);
     if (right == NULL) {
         return NULL;
     }
@@ -1134,12 +1136,12 @@ struct ValueData *generateMultiply(struct Token *token,
         return NULL;
     }
     struct ValueData *left =
-        generateToken(((struct Token **)token->data)[1], module, false);
+        generateToken(((struct Token **)token->data)[1], module, false, true);
     if (left == NULL) {
         return NULL;
     }
     struct ValueData *right =
-        generateToken(((struct Token **)token->data)[2], module, false);
+        generateToken(((struct Token **)token->data)[2], module, false, true);
     if (right == NULL) {
         return NULL;
     }
@@ -1244,12 +1246,12 @@ struct ValueData *generateDivide(struct Token *token, struct ModuleData *module,
         return NULL;
     }
     struct ValueData *left =
-        generateToken(((struct Token **)token->data)[1], module, false);
+        generateToken(((struct Token **)token->data)[1], module, false, true);
     if (left == NULL) {
         return NULL;
     }
     struct ValueData *right =
-        generateToken(((struct Token **)token->data)[2], module, false);
+        generateToken(((struct Token **)token->data)[2], module, false, true);
     if (right == NULL) {
         return NULL;
     }
@@ -1416,12 +1418,12 @@ struct ValueData *generateEquals(struct Token *token, struct ModuleData *module,
         return NULL;
     }
     struct ValueData *left =
-        generateToken(((struct Token **)token->data)[1], module, false);
+        generateToken(((struct Token **)token->data)[1], module, false, true);
     if (left == NULL) {
         return NULL;
     }
     struct ValueData *right =
-        generateToken(((struct Token **)token->data)[2], module, false);
+        generateToken(((struct Token **)token->data)[2], module, false, true);
     if (right == NULL) {
         return NULL;
     }
@@ -1509,11 +1511,363 @@ struct ValueData *generateEquals(struct Token *token, struct ModuleData *module,
     return val;
 }
 
+struct ValueData *generateLessThan(struct Token *token,
+                                   struct ModuleData *module, size_t exprLen) {
+    if (exprLen < 3) {
+        fprintf(stderr,
+                "ERROR on line %llu column %llu: Too few arguments for "
+                "less than operation - expected 3 arguments\n",
+                token->lineNum, token->colNum);
+        return NULL;
+    }
+    if (exprLen > 3) {
+        fprintf(stderr,
+                "ERROR on line %llu column %llu: Too many arguments for "
+                "less than operation - expected 3 arguments\n",
+                token->lineNum, token->colNum);
+        return NULL;
+    }
+    struct ValueData *left =
+        generateToken(((struct Token **)token->data)[1], module, false, true);
+    if (left == NULL) {
+        return NULL;
+    }
+    struct ValueData *right =
+        generateToken(((struct Token **)token->data)[2], module, false, true);
+    if (right == NULL) {
+        return NULL;
+    }
+    struct ValueData *val = malloc(sizeof(struct ValueData));
+    val->value = malloc(sizeof(LLVMValueRef));
+    val->type = malloc(sizeof(struct TypeData));
+    val->type->length = -1;
+    if (left->type->type == FLOAT32 || right->type->type == FLOAT32) {
+        if (left->type->type != FLOAT32) {
+            if (left->type->type == INT32) {
+                *(left->value) = LLVMBuildSIToFP(
+                    module->builder, *(left->value),
+                    LLVMFloatTypeInContext(module->context), "");
+                printf("WARNING on line %llu column %llu: Converting an "
+                       "unsigned integer type to a float during less than "
+                       "operation, possible lost of data\n",
+                       token->lineNum, token->colNum);
+            } else if (left->type->type == UNSIGNED32) {
+                *(left->value) = LLVMBuildUIToFP(
+                    module->builder, *(left->value),
+                    LLVMFloatTypeInContext(module->context), "");
+                printf("WARNING on line %llu column %llu: Converting an "
+                       "integer type to a float during less than operation, "
+                       "possible lost of data\n",
+                       token->lineNum, token->colNum);
+            } else {
+                fprintf(
+                    stderr,
+                    "ERROR on line %llu column %llu: Can only compare types "
+                    "float, int, uint\n",
+                    token->lineNum, token->colNum);
+                free(val->type);
+                free(val);
+                return NULL;
+            }
+        }
+        if (right->type->type != FLOAT32) {
+            if (right->type->type == INT32) {
+                *(right->value) = LLVMBuildSIToFP(
+                    module->builder, *(right->value),
+                    LLVMFloatTypeInContext(module->context), "");
+                printf("WARNING on line %llu column %llu: Converting an "
+                       "integer type to a float during less than operation, "
+                       "possible lost of data\n",
+                       token->lineNum, token->colNum);
+            } else if (right->type->type == UNSIGNED32) {
+                *(right->value) = LLVMBuildUIToFP(
+                    module->builder, *(right->value),
+                    LLVMFloatTypeInContext(module->context), "");
+                printf("WARNING on line %llu column %llu: Converting an "
+                       "unsigned integer type to a float during less than "
+                       "operation, possible lost of data\n",
+                       token->lineNum, token->colNum);
+            } else {
+                fprintf(
+                    stderr,
+                    "ERROR on line %llu column %llu: Can only compare types "
+                    "float, int, uint\n",
+                    token->lineNum, token->colNum);
+                free(val->type);
+                free(val);
+                return NULL;
+            }
+        }
+        *(val->value) = LLVMBuildFCmp(module->builder, LLVMRealOLT,
+                                      *(left->value), *(right->value), "");
+        val->type->type = BOOL;
+    } else if (left->type->type == INT32 || right->type->type == INT32) {
+        if (left->type->type != INT32) {
+            if (left->type->type != UNSIGNED32) {
+                fprintf(
+                    stderr,
+                    "ERROR on line %llu column %llu: Can only compare types "
+                    "float, int, uint\n",
+                    token->lineNum, token->colNum);
+                free(val->type);
+                free(val);
+                return NULL;
+            }
+            printf("WARNING on line %llu column %llu: Converting an unsigned "
+                   "integer to an integer during less than operation, possible "
+                   "lost of data\n",
+                   token->lineNum, token->colNum);
+        }
+        if (right->type->type != INT32) {
+            if (right->type->type != UNSIGNED32) {
+                fprintf(
+                    stderr,
+                    "ERROR on line %llu column %llu: Can only compare types "
+                    "float, int, uint\n",
+                    token->lineNum, token->colNum);
+                free(val->type);
+                free(val);
+                return NULL;
+            }
+            printf("WARNING on line %llu column %llu: Converting an unsigned "
+                   "integer to an integer during less than operation, possible "
+                   "lost of data\n",
+                   token->lineNum, token->colNum);
+        }
+        *(val->value) = LLVMBuildICmp(module->builder, LLVMIntSLT,
+                                      *(left->value), *(right->value), "");
+        val->type->type = BOOL;
+    } else {
+        if ((left->type->type != INT32 && left->type->type != UNSIGNED32) ||
+            (right->type->type != INT32 && right->type->type != UNSIGNED32)) {
+            fprintf(stderr,
+                    "ERROR on line %llu column %llu: Can only "
+                    "compare types float, int, uint\n",
+                    token->lineNum, token->colNum);
+            free(val->type);
+            free(val);
+            return NULL;
+        }
+        if (left->type->type != UNSIGNED32) {
+            if (left->type->type != INT32) {
+                fprintf(stderr,
+                        "ERROR on line %llu column %llu: Can only "
+                        "compare types float, int, uint\n",
+                        token->lineNum, token->colNum);
+                free(val->type);
+                free(val);
+                return NULL;
+            }
+            printf("WARNING on line %llu column %llu: Converting an "
+                   "integer to an unsigned integer during less than operation, "
+                   "possible lost of data\n",
+                   token->lineNum, token->colNum);
+        }
+        if (right->type->type != UNSIGNED32) {
+            if (right->type->type != INT32) {
+                fprintf(stderr,
+                        "ERROR on line %llu column %llu: Can only divide types "
+                        "float, int, uint\n",
+                        token->lineNum, token->colNum);
+                free(val->type);
+                free(val);
+                return NULL;
+            }
+            printf("WARNING on line %llu column %llu: Converting an integer "
+                   "to an unsigned integer during less than operation, "
+                   "possible lost of data\n",
+                   token->lineNum, token->colNum);
+        }
+        *(val->value) = LLVMBuildICmp(module->builder, LLVMIntULT,
+                                      *(left->value), *(right->value), "");
+        val->type->type = BOOL;
+    }
+    return val;
+}
+
+struct ValueData *generateGreaterThan(struct Token *token,
+                                      struct ModuleData *module,
+                                      size_t exprLen) {
+    if (exprLen < 3) {
+        fprintf(stderr,
+                "ERROR on line %llu column %llu: Too few arguments for "
+                "less greater operation - expected 3 arguments\n",
+                token->lineNum, token->colNum);
+        return NULL;
+    }
+    if (exprLen > 3) {
+        fprintf(stderr,
+                "ERROR on line %llu column %llu: Too many arguments for "
+                "less greater operation - expected 3 arguments\n",
+                token->lineNum, token->colNum);
+        return NULL;
+    }
+    struct ValueData *left =
+        generateToken(((struct Token **)token->data)[1], module, false, true);
+    if (left == NULL) {
+        return NULL;
+    }
+    struct ValueData *right =
+        generateToken(((struct Token **)token->data)[2], module, false, true);
+    if (right == NULL) {
+        return NULL;
+    }
+    struct ValueData *val = malloc(sizeof(struct ValueData));
+    val->value = malloc(sizeof(LLVMValueRef));
+    val->type = malloc(sizeof(struct TypeData));
+    val->type->length = -1;
+    if (left->type->type == FLOAT32 || right->type->type == FLOAT32) {
+        if (left->type->type != FLOAT32) {
+            if (left->type->type == INT32) {
+                *(left->value) = LLVMBuildSIToFP(
+                    module->builder, *(left->value),
+                    LLVMFloatTypeInContext(module->context), "");
+                printf("WARNING on line %llu column %llu: Converting an "
+                       "unsigned integer type to a float during greater than "
+                       "operation, possible lost of data\n",
+                       token->lineNum, token->colNum);
+            } else if (left->type->type == UNSIGNED32) {
+                *(left->value) = LLVMBuildUIToFP(
+                    module->builder, *(left->value),
+                    LLVMFloatTypeInContext(module->context), "");
+                printf("WARNING on line %llu column %llu: Converting an "
+                       "integer type to a float during greater than operation, "
+                       "possible lost of data\n",
+                       token->lineNum, token->colNum);
+            } else {
+                fprintf(
+                    stderr,
+                    "ERROR on line %llu column %llu: Can only compare types "
+                    "float, int, uint\n",
+                    token->lineNum, token->colNum);
+                free(val->type);
+                free(val);
+                return NULL;
+            }
+        }
+        if (right->type->type != FLOAT32) {
+            if (right->type->type == INT32) {
+                *(right->value) = LLVMBuildSIToFP(
+                    module->builder, *(right->value),
+                    LLVMFloatTypeInContext(module->context), "");
+                printf("WARNING on line %llu column %llu: Converting an "
+                       "integer type to a float during greater than operation, "
+                       "possible lost of data\n",
+                       token->lineNum, token->colNum);
+            } else if (right->type->type == UNSIGNED32) {
+                *(right->value) = LLVMBuildUIToFP(
+                    module->builder, *(right->value),
+                    LLVMFloatTypeInContext(module->context), "");
+                printf("WARNING on line %llu column %llu: Converting an "
+                       "unsigned integer type to a float during greater than "
+                       "operation, possible lost of data\n",
+                       token->lineNum, token->colNum);
+            } else {
+                fprintf(
+                    stderr,
+                    "ERROR on line %llu column %llu: Can only compare types "
+                    "float, int, uint\n",
+                    token->lineNum, token->colNum);
+                free(val->type);
+                free(val);
+                return NULL;
+            }
+        }
+        *(val->value) = LLVMBuildFCmp(module->builder, LLVMRealOGT,
+                                      *(left->value), *(right->value), "");
+        val->type->type = BOOL;
+    } else if (left->type->type == INT32 || right->type->type == INT32) {
+        if (left->type->type != INT32) {
+            if (left->type->type != UNSIGNED32) {
+                fprintf(
+                    stderr,
+                    "ERROR on line %llu column %llu: Can only compare types "
+                    "float, int, uint\n",
+                    token->lineNum, token->colNum);
+                free(val->type);
+                free(val);
+                return NULL;
+            }
+            printf(
+                "WARNING on line %llu column %llu: Converting an unsigned "
+                "integer to an integer during greater than operation, possible "
+                "lost of data\n",
+                token->lineNum, token->colNum);
+        }
+        if (right->type->type != INT32) {
+            if (right->type->type != UNSIGNED32) {
+                fprintf(
+                    stderr,
+                    "ERROR on line %llu column %llu: Can only compare types "
+                    "float, int, uint\n",
+                    token->lineNum, token->colNum);
+                free(val->type);
+                free(val);
+                return NULL;
+            }
+            printf(
+                "WARNING on line %llu column %llu: Converting an unsigned "
+                "integer to an integer during greater than operation, possible "
+                "lost of data\n",
+                token->lineNum, token->colNum);
+        }
+        *(val->value) = LLVMBuildICmp(module->builder, LLVMIntSGT,
+                                      *(left->value), *(right->value), "");
+        val->type->type = BOOL;
+    } else {
+        if ((left->type->type != INT32 && left->type->type != UNSIGNED32) ||
+            (right->type->type != INT32 && right->type->type != UNSIGNED32)) {
+            fprintf(stderr,
+                    "ERROR on line %llu column %llu: Can only "
+                    "compare types float, int, uint\n",
+                    token->lineNum, token->colNum);
+            free(val->type);
+            free(val);
+            return NULL;
+        }
+        if (left->type->type != UNSIGNED32) {
+            if (left->type->type != INT32) {
+                fprintf(stderr,
+                        "ERROR on line %llu column %llu: Can only "
+                        "compare types float, int, uint\n",
+                        token->lineNum, token->colNum);
+                free(val->type);
+                free(val);
+                return NULL;
+            }
+            printf(
+                "WARNING on line %llu column %llu: Converting an "
+                "integer to an unsigned integer during greater than operation, "
+                "possible lost of data\n",
+                token->lineNum, token->colNum);
+        }
+        if (right->type->type != UNSIGNED32) {
+            if (right->type->type != INT32) {
+                fprintf(stderr,
+                        "ERROR on line %llu column %llu: Can only divide types "
+                        "float, int, uint\n",
+                        token->lineNum, token->colNum);
+                free(val->type);
+                free(val);
+                return NULL;
+            }
+            printf("WARNING on line %llu column %llu: Converting an integer "
+                   "to an unsigned integer during greater than operation, "
+                   "possible lost of data\n",
+                   token->lineNum, token->colNum);
+        }
+        *(val->value) = LLVMBuildICmp(module->builder, LLVMIntUGT,
+                                      *(left->value), *(right->value), "");
+        val->type->type = BOOL;
+    }
+    return val;
+}
+
 struct ValueData *generateBlock(struct Token *token, struct ModuleData *module,
                                 size_t exprLen, size_t startTokenIdx) {
     for (size_t i = startTokenIdx; i < exprLen; i++) {
-        struct ValueData *val =
-            generateToken(((struct Token **)token->data)[i], module, false);
+        struct ValueData *val = generateToken(((struct Token **)token->data)[i],
+                                              module, false, true);
         if (val == NULL) {
             return NULL;
         }
@@ -1528,7 +1882,7 @@ struct ValueData *generateBlock(struct Token *token, struct ModuleData *module,
 }
 
 struct ValueData *generateWhen(struct Token *token, struct ModuleData *module,
-                               size_t exprLen) {
+                               size_t exprLen, bool negate) {
     if (exprLen < 3) {
         fprintf(stderr,
                 "ERROR on line %llu column %llu: Too few arguments for "
@@ -1548,28 +1902,7 @@ struct ValueData *generateWhen(struct Token *token, struct ModuleData *module,
         module->context, module->mainFunc, "then");
     LLVMBasicBlockRef mergeBlock = LLVMAppendBasicBlockInContext(
         module->context, module->mainFunc, "merge");
-
-    LLVMTypeRef valType = LLVMStructTypeInContext(
-        module->context,
-        (LLVMTypeRef[]){
-            LLVMPointerType(LLVMInt8TypeInContext(module->context), 0),
-            LLVMInt1TypeInContext(module->context)},
-        2, 0);
-
-    LLVMPositionBuilderAtEnd(module->builder, module->allocaBlock);
-    LLVMValueRef val = LLVMBuildAlloca(module->builder, valType, "");
-    LLVMPositionBuilderAtEnd(module->builder, module->currentBlock);
-    LLVMBuildInsertValue(module->builder, LLVMGetUndef(valType),
-                         LLVMConstNull(LLVMPointerType(
-                             LLVMInt8TypeInContext(module->context), 0)),
-                         0, "");
-    LLVMBuildInsertValue(
-        module->builder, LLVMGetUndef(valType),
-        LLVMConstInt(LLVMInt1TypeInContext(module->context), 1, 0), 1, "");
-    LLVMValueRef field =
-        LLVMBuildStructGEP2(module->builder, valType, val, 0, "");
-
-    LLVMBuildCondBr(module->builder, *cond, thenBlock, mergeBlock);
+    LLVMBasicBlockRef lastBlock = module->currentBlock;
 
     LLVMPositionBuilderAtEnd(module->builder, thenBlock);
     module->currentBlock = thenBlock;
@@ -1577,50 +1910,53 @@ struct ValueData *generateWhen(struct Token *token, struct ModuleData *module,
     if (block == NULL) {
         return NULL;
     }
-    LLVMTypeRef *type = generateType(block->type, module);
-    if (type == NULL) {
+    LLVMTypeRef *blockLlvmType = generateType(block->type, module);
+    if (blockLlvmType == NULL) {
         return NULL;
     }
-    LLVMTypeRef newValType = LLVMStructTypeInContext(
-        module->context,
-        (LLVMTypeRef[]){LLVMPointerType(*type, 0),
-                        LLVMInt1TypeInContext(module->context)},
-        2, 0);
     LLVMPositionBuilderAtEnd(module->builder, module->allocaBlock);
-    LLVMValueRef blockAlloca = LLVMBuildAlloca(module->builder, *type, "");
+    LLVMValueRef boolValue = LLVMBuildAlloca(
+        module->builder, LLVMInt1TypeInContext(module->context), "");
+    LLVMValueRef blockValue =
+        LLVMBuildAlloca(module->builder, *blockLlvmType, "");
+    LLVMPositionBuilderAtEnd(module->builder, lastBlock);
+    LLVMBuildStore(module->builder,
+                   LLVMConstInt(LLVMInt1TypeInContext(module->context), 1, 0),
+                   boolValue);
+    LLVMBuildStore(module->builder, LLVMConstNull(*blockLlvmType), blockValue);
+    if (negate) {
+        LLVMBuildCondBr(module->builder, *cond, mergeBlock, thenBlock);
+    } else {
+        LLVMBuildCondBr(module->builder, *cond, thenBlock, mergeBlock);
+    }
     LLVMPositionBuilderAtEnd(module->builder, module->currentBlock);
-    LLVMBuildStore(module->builder, *(block->value), blockAlloca);
-    LLVMValueRef blockAllocaCast = LLVMBuildBitCast(
-        module->builder, blockAlloca, LLVMPointerType(*type, 0), "");
-    LLVMValueRef blockAllocaCast = LLVMBuildBitCast(
-        module->builder, *(block->value), LLVMPointerType(*type, 0), "");
-    LLVMBuildStore(module->builder, blockAllocaCast, field);
-    LLVMBuildInsertValue(
-        module->builder, LLVMGetUndef(valType),
-        LLVMConstInt(LLVMInt1TypeInContext(module->context), 0, 0), 1, "");
-
+    LLVMBuildStore(module->builder,
+                   LLVMConstInt(LLVMInt1TypeInContext(module->context), 0, 0),
+                   boolValue);
+    LLVMBuildStore(module->builder, *(block->value), blockValue);
     LLVMBuildBr(module->builder, mergeBlock);
 
     LLVMPositionBuilderAtEnd(module->builder, mergeBlock);
     module->currentBlock = mergeBlock;
-    LLVMValueRef loadedVal = LLVMBuildLoad2(module->builder, valType, val, "");
-    LLVMValueRef newVal =
-        LLVMBuildBitCast(module->builder, loadedVal, newValType, "");
-    LLVMValueRef ptrE1 = LLVMBuildExtractValue(module->builder, newVal, 0, "");
-    LLVMValueRef e1 = LLVMBuildLoad2(module->builder, *type, ptrE1, "");
-    LLVMValueRef e2 = LLVMBuildExtractValue(module->builder, newVal, 1, "");
     LLVMTypeRef llvmRetType = LLVMStructTypeInContext(
         module->context,
-        (LLVMTypeRef[]){*type, LLVMInt1TypeInContext(module->context)}, 2, 0);
+        (LLVMTypeRef[]){*blockLlvmType, LLVMInt1TypeInContext(module->context)},
+        2, 0);
+    LLVMValueRef loadedBoolVal = LLVMBuildLoad2(
+        module->builder, LLVMInt1TypeInContext(module->context), boolValue, "");
+    LLVMValueRef loadedBlockVal =
+        LLVMBuildLoad2(module->builder, *blockLlvmType, blockValue, "");
     LLVMPositionBuilderAtEnd(module->builder, module->allocaBlock);
-    LLVMValueRef retVal = LLVMBuildAlloca(module->builder, llvmRetType, "");
+    LLVMValueRef retValPtr = LLVMBuildAlloca(module->builder, llvmRetType, "");
     LLVMPositionBuilderAtEnd(module->builder, module->currentBlock);
-    LLVMValueRef newE1 =
-        LLVMBuildStructGEP2(module->builder, llvmRetType, retVal, 0, "");
-    LLVMValueRef newE2 =
-        LLVMBuildStructGEP2(module->builder, llvmRetType, retVal, 1, "");
-    LLVMBuildStore(module->builder, e1, newE1);
-    LLVMBuildStore(module->builder, e2, newE2);
+    LLVMValueRef e1 =
+        LLVMBuildStructGEP2(module->builder, llvmRetType, retValPtr, 0, "");
+    LLVMValueRef e2 =
+        LLVMBuildStructGEP2(module->builder, llvmRetType, retValPtr, 1, "");
+    LLVMBuildStore(module->builder, loadedBlockVal, e1);
+    LLVMBuildStore(module->builder, loadedBoolVal, e2);
+    LLVMValueRef retVal =
+        LLVMBuildLoad2(module->builder, llvmRetType, retValPtr, "");
 
     struct ValueData *ret = malloc(sizeof(struct ValueData));
     ret->value = malloc(sizeof(LLVMValueRef));
@@ -1688,8 +2024,17 @@ struct ValueData *generateExpr(struct Token *token, struct ModuleData *module) {
     if (strcmp(funcName, "=") == 0) {
         return generateEquals(token, module, exprLen);
     }
+    if (strcmp(funcName, "<") == 0) {
+        return generateLessThan(token, module, exprLen);
+    }
+    if (strcmp(funcName, ">") == 0) {
+        return generateGreaterThan(token, module, exprLen);
+    }
     if (strcmp(funcName, "when") == 0) {
-        return generateWhen(token, module, exprLen);
+        return generateWhen(token, module, exprLen, false);
+    }
+    if (strcmp(funcName, "unless") == 0) {
+        return generateWhen(token, module, exprLen, true);
     }
     if (stbds_shgetp_null(module->variables, funcName) != NULL) {
         struct VariableData var = stbds_shget(module->variables, funcName);
@@ -1761,8 +2106,8 @@ struct ValueData *generateExpr(struct Token *token, struct ModuleData *module) {
     return NULL;
 }
 
-struct ValueData *generateIdent(struct Token *token,
-                                struct ModuleData *module) {
+struct ValueData *generateIdent(struct Token *token, struct ModuleData *module,
+                                bool falseInsteadOfNil) {
     char *name = (char *)token->data;
     if (stbds_shgetp_null(module->variables, name) != NULL) {
         struct VariableData var = stbds_shget(module->variables, name);
@@ -1793,6 +2138,35 @@ struct ValueData *generateIdent(struct Token *token,
         struct ValueData *ret = malloc(sizeof(struct ValueData));
         ret->type = var.type;
         ret->value = loadedVar;
+        return ret;
+    }
+    if (strcmp(name, "t") == 0) {
+        struct ValueData *ret = malloc(sizeof(struct ValueData));
+        ret->value = malloc(sizeof(LLVMValueRef));
+        *(ret->value) =
+            LLVMConstInt(LLVMInt1TypeInContext(module->context), 1, 0);
+        ret->type = malloc(sizeof(struct TypeData));
+        ret->type->type = BOOL;
+        ret->type->length = -1;
+        return ret;
+    }
+    if (strcmp(name, "nil") == 0) {
+        if (falseInsteadOfNil) {
+            struct ValueData *ret = malloc(sizeof(struct ValueData));
+            ret->value = malloc(sizeof(LLVMValueRef));
+            *(ret->value) =
+                LLVMConstInt(LLVMInt1TypeInContext(module->context), 0, 0);
+            ret->type = malloc(sizeof(struct TypeData));
+            ret->type->type = BOOL;
+            ret->type->length = -1;
+            return ret;
+        }
+        struct ValueData *ret = malloc(sizeof(struct ValueData));
+        ret->value = malloc(sizeof(LLVMValueRef));
+        *(ret->value) = NULL;
+        ret->type = malloc(sizeof(struct TypeData));
+        ret->type->type = NIL;
+        ret->type->length = -1;
         return ret;
     }
     fprintf(stderr, "ERROR on line %llu column %llu: Unknow identifier\n",
@@ -1843,7 +2217,8 @@ LLVMValueRef *generateCharPtr(struct Token *token, struct ModuleData *module) {
 }
 
 struct ValueData *generateToken(struct Token *token, struct ModuleData *module,
-                                bool charPtrInsteadOfString) {
+                                bool charPtrInsteadOfString,
+                                bool falseInsteadOfNil) {
     struct ValueData *ret = malloc(sizeof(struct ValueData));
     LLVMValueRef *val;
     switch (token->type) {
@@ -1886,7 +2261,7 @@ struct ValueData *generateToken(struct Token *token, struct ModuleData *module,
         return ret;
 
     case IDENT_TOKEN:
-        return generateIdent(token, module);
+        return generateIdent(token, module, falseInsteadOfNil);
 
     case EXPR_TOKEN:
         return generateExpr(token, module);
@@ -2076,9 +2451,18 @@ bool cmptype(struct TypeData *cmpType, struct TypeData *type, size_t lineNum,
 
 LLVMValueRef *generateTokenOfType(struct Token *token, struct TypeData type,
                                   struct ModuleData *module) {
-    struct ValueData *val = generateToken(token, module, type.type != STRING);
+    struct ValueData *val =
+        generateToken(token, module, type.type != STRING, type.type == BOOL);
     if (val == NULL) {
         return NULL;
+    }
+    if (val->type->type == NIL) {
+        LLVMTypeRef *llvmType = generateType(&type, module);
+        if (llvmType == NULL) {
+            return NULL;
+        }
+        *(val->value) = LLVMConstNull(*llvmType);
+        return val->value;
     }
     if (!cmptype(val->type, &type, token->lineNum, token->colNum, true)) {
         return NULL;
@@ -2102,8 +2486,8 @@ int generate(struct Token *body, const char *filename,
 
     LLVMTypeRef mainType = LLVMFunctionType(LLVMInt32Type(), NULL, 0, 0);
     LLVMValueRef mainFunc = LLVMAddFunction(module, "main", mainType);
-    LLVMBasicBlockRef allocaBlock = LLVMAppendBasicBlock(mainFunc, "entry");
-    LLVMBasicBlockRef entry = LLVMAppendBasicBlock(mainFunc, "user-entry");
+    LLVMBasicBlockRef allocaBlock = LLVMAppendBasicBlock(mainFunc, "alloca");
+    LLVMBasicBlockRef entry = LLVMAppendBasicBlock(mainFunc, "entry");
 
     struct ModuleData moduleData = {builder,     context, module, mainFunc,
                                     allocaBlock, entry,   NULL,   NULL,
@@ -2114,8 +2498,8 @@ int generate(struct Token *body, const char *filename,
     LLVMPositionBuilderAtEnd(builder, entry);
     size_t numTokens = stbds_arrlen((struct Token **)body->data);
     for (size_t i = 0; i < numTokens; i++) {
-        struct ValueData *val =
-            generateToken(((struct Token **)body->data)[i], &moduleData, false);
+        struct ValueData *val = generateToken(((struct Token **)body->data)[i],
+                                              &moduleData, false, false);
         if (val == NULL) {
             return 1;
         }
