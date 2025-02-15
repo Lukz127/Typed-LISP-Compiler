@@ -1,0 +1,4 @@
+*.sao
+*.ll
+.vscode
+build
