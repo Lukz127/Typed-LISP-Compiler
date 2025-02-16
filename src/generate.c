@@ -442,6 +442,10 @@ LLVMTypeRef *generateType(struct TypeData *type, struct ModuleData *module) {
         *llvmType = LLVMInt32TypeInContext(module->context);
         return llvmType;
     }
+    if (type->type == UNSIGNED64) {
+        *llvmType = LLVMInt64TypeInContext(module->context);
+        return llvmType;
+    }
     if (type->type == FLOAT32) {
         *llvmType = LLVMFloatTypeInContext(module->context);
         return llvmType;
@@ -473,7 +477,6 @@ LLVMTypeRef *generateType(struct TypeData *type, struct ModuleData *module) {
             return NULL;
         }
         *llvmType = LLVMPointerType(*otherType, 0);
-        free(otherType);
         return llvmType;
     }
     if (type->type == VECTOR) {
@@ -487,7 +490,6 @@ LLVMTypeRef *generateType(struct TypeData *type, struct ModuleData *module) {
                             LLVMInt32TypeInContext(module->context),
                             LLVMInt32TypeInContext(module->context)},
             3, 0);
-        free(otherType);
         return llvmType;
     }
     if (type->type == NULLABLE) {
@@ -499,7 +501,6 @@ LLVMTypeRef *generateType(struct TypeData *type, struct ModuleData *module) {
             module->context,
             (LLVMTypeRef[]){*otherType, LLVMInt1TypeInContext(module->context)},
             2, 0);
-        free(otherType);
         return llvmType;
     }
     // TODO: add MAP
@@ -599,7 +600,9 @@ LLVMValueRef *generateVarDef(struct Token *token, struct ModuleData *module,
         return NULL;
     }
     if (((struct Token **)token->data)[2]->type != IDENT_TOKEN &&
-        ((struct Token **)token->data)[2]->type != EXPR_TOKEN) {
+        ((struct Token **)token->data)[2]->type != EXPR_TOKEN &&
+        ((struct Token **)token->data)[2]->type != REF_TOKEN &&
+        ((struct Token **)token->data)[2]->type != DE_REF_TOKEN) {
         fprintf(stderr, "ERROR on line %llu column %llu: Expected a type\n",
                 ((struct Token **)token->data)[2]->lineNum,
                 ((struct Token **)token->data)[2]->colNum);
@@ -1881,6 +1884,38 @@ struct ValueData *generateBlock(struct Token *token, struct ModuleData *module,
     return NULL;
 }
 
+struct ValueData *generateSizeof(struct Token *token, struct ModuleData *module,
+                                 size_t exprLen) {
+    if (exprLen < 2) {
+        fprintf(stderr,
+                "ERROR on line %llu column %llu: Too few arguments for "
+                "sizeof - expected at 2 arguments - (sizeof "
+                "<type>)\n",
+                token->lineNum, token->colNum);
+        return NULL;
+    }
+    if (((struct Token **)token->data)[1]->type != IDENT_TOKEN &&
+        ((struct Token **)token->data)[1]->type != EXPR_TOKEN &&
+        ((struct Token **)token->data)[1]->type != REF_TOKEN &&
+        ((struct Token **)token->data)[1]->type != DE_REF_TOKEN) {
+        fprintf(stderr, "ERROR on line %llu column %llu: Expected a type\n",
+                ((struct Token **)token->data)[2]->lineNum,
+                ((struct Token **)token->data)[2]->colNum);
+        return NULL;
+    }
+    struct TypeData *type = getType(((struct Token **)token->data)[1], module);
+    LLVMTypeRef *llvmType = generateType(type, module);
+    struct ValueData *val = malloc(sizeof(struct ValueData));
+    val->value = malloc(sizeof(LLVMValueRef));
+    val->type = malloc(sizeof(struct ValueData));
+    *(val->value) = LLVMSizeOf(*llvmType);
+    val->type->type = UNSIGNED64;
+    val->type->length = -1;
+    free(type);
+    free(llvmType);
+    return val;
+}
+
 struct ValueData *generateWhen(struct Token *token, struct ModuleData *module,
                                size_t exprLen, bool negate) {
     if (exprLen < 3) {
@@ -2036,6 +2071,9 @@ struct ValueData *generateExpr(struct Token *token, struct ModuleData *module) {
     if (strcmp(funcName, "unless") == 0) {
         return generateWhen(token, module, exprLen, true);
     }
+    if (strcmp(funcName, "sizeof") == 0) {
+        return generateSizeof(token, module, exprLen);
+    }
     if (stbds_shgetp_null(module->variables, funcName) != NULL) {
         struct VariableData var = stbds_shget(module->variables, funcName);
         if (var.type->type == NULLABLE) {
@@ -2176,15 +2214,44 @@ struct ValueData *generateIdent(struct Token *token, struct ModuleData *module,
 
 struct ValueData *generateDeRef(struct Token *token,
                                 struct ModuleData *module) {
-    fprintf(stderr, "ERROR on line %llu column %llu: TODO\n", token->lineNum,
-            token->colNum);
-    return NULL;
+    struct Token *other = ((struct Token **)token->data)[0];
+    struct ValueData *val = generateToken(other, module, false, true);
+    if (val->type->type != POINTER) {
+        fprintf(
+            stderr,
+            "ERROR on line %llu column %llu: Can only dereference a pointer\n",
+            token->lineNum, token->colNum);
+        return NULL;
+    }
+    LLVMTypeRef *llvmType = generateType(val->type, module);
+    if (llvmType == NULL) {
+        return NULL;
+    }
+    struct ValueData *newVal = malloc(sizeof(struct ValueData));
+    newVal->value = malloc(sizeof(LLVMValueRef));
+    *(newVal->value) =
+        LLVMBuildLoad2(module->builder, *llvmType, *(val->value), "");
+    newVal->type = val->type->otherType;
+    return newVal;
 }
 
 struct ValueData *generateRef(struct Token *token, struct ModuleData *module) {
-    fprintf(stderr, "ERROR on line %llu column %llu: TODO\n", token->lineNum,
-            token->colNum);
-    return NULL;
+    struct Token *other = ((struct Token **)token->data)[0];
+    struct ValueData *val = generateToken(other, module, false, true);
+    LLVMTypeRef *llvmType = generateType(val->type, module);
+    if (llvmType == NULL) {
+        return NULL;
+    }
+    struct ValueData *newVal = malloc(sizeof(struct ValueData));
+    newVal->value = malloc(sizeof(LLVMValueRef));
+    *(newVal->value) =
+        LLVMBuildAlloca(module->builder, LLVMPointerType(*llvmType, 0), "");
+    LLVMBuildStore(module->builder, *(val->value), *(newVal->value));
+    newVal->type = malloc(sizeof(struct TypeData));
+    newVal->type->type = POINTER;
+    newVal->type->length = -1;
+    newVal->type->otherType = val->type;
+    return newVal;
 }
 
 LLVMValueRef *generateInt(struct Token *token, struct ModuleData *module) {
