@@ -67,17 +67,32 @@ struct ValueData {
     LLVMValueRef *value;
 };
 
+struct VariableList {
+    char *key;
+    struct VariableData value;
+};
+
+struct MacroData {
+    char **args;
+    char *restArg;      // NULL for no rest arg
+    struct Token *body; // the body to generate
+};
+
+struct ContextData {
+    LLVMValueRef func;
+    LLVMBasicBlockRef allocaBlock;
+    LLVMBasicBlockRef currentBlock;
+    struct VariableList *localVariables;
+    struct VariableList *args;
+    bool isVarArg;
+};
+
 struct ModuleData {
     LLVMBuilderRef builder;
     LLVMContextRef context;
     LLVMModuleRef module;
-    LLVMValueRef mainFunc;
-    LLVMBasicBlockRef allocaBlock;
-    LLVMBasicBlockRef currentBlock;
-    struct {
-        char *key;
-        struct VariableData value;
-    } *variables;
+    struct ContextData **contexts;
+    struct VariableList **variables;
     struct {
         char *key;
         struct ClassData value;
@@ -87,6 +102,7 @@ struct ModuleData {
         struct FuncData *value;
     } *functions;
     size_t nextTempNum;
+    size_t numContexts;
 };
 
 int generate(struct Token *body, const char *filename,
