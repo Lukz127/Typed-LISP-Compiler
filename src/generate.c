@@ -146,6 +146,73 @@ size_t findArgIndex(struct FunctionArgType *args, char *name, size_t numArgs) {
     return numArgs + 1;
 }
 
+struct ValueData *generateMacro(struct Token *token, struct ModuleData *module,
+                                int exprLen) {
+    struct MacroData *macroData = stbds_shget(
+        module->macros, (char *)((struct Token **)token->data)[0]->data);
+    struct MacroArg *args = NULL;
+    struct Token **restArgs = NULL;
+    size_t numRestArgs = 0;
+    if (exprLen < macroData->numArgs) {
+        fprintf(stderr,
+                "ERROR on line %llu column %llu: "
+                "Too few arguments for macro \"%s\"\n",
+                token->lineNum, token->colNum,
+                (char *)((struct Token **)token->data)[0]->data);
+        return NULL;
+    }
+    if (exprLen - 1 > macroData->numArgs && macroData->restArg == NULL) {
+        fprintf(stderr,
+                "ERROR on line %llu column %llu: "
+                "Too many arguments for macro \"%s\"\n",
+                token->lineNum, token->colNum,
+                (char *)((struct Token **)token->data)[0]->data);
+        return NULL;
+    }
+    for (size_t i = 1; i < exprLen; i++) {
+        if (i >= macroData->numArgs && macroData->restArg != NULL) {
+            numRestArgs++;
+            stbds_arrpush(restArgs, ((struct Token **)token->data)[i]);
+            continue;
+        }
+        stbds_shput(args, macroData->args[i - 1],
+                    ((struct Token **)token->data)[i]);
+    }
+    module->contexts[module->numContexts - 1]->macroArgs = args;
+    if (macroData->restArg != NULL) {
+        module->contexts[module->numContexts - 1]->macroRestArg =
+            malloc(sizeof(struct MacroRestArg));
+        module->contexts[module->numContexts - 1]->macroRestArg->name =
+            macroData->restArg;
+        module->contexts[module->numContexts - 1]->macroRestArg->numValues =
+            numRestArgs;
+        module->contexts[module->numContexts - 1]->macroRestArg->values =
+            restArgs;
+    }
+    for (size_t i = 3; i < macroData->bodyLen; i++) {
+        struct ValueData *val =
+            generateToken(macroData->body[i], module, false, true);
+        if (val == NULL) {
+            return NULL;
+        }
+        if (i == macroData->bodyLen - 1) {
+            stbds_shfree(module->contexts[module->numContexts - 1]->macroArgs);
+            if (macroData->restArg != NULL) {
+                stbds_arrfree(module->contexts[module->numContexts - 1]
+                                  ->macroRestArg->values);
+                free(module->contexts[module->numContexts - 1]->macroRestArg);
+            }
+            module->contexts[module->numContexts - 1]->macroArgs = NULL;
+            module->contexts[module->numContexts - 1]->macroRestArg = NULL;
+            return val;
+        }
+        free(val);
+    }
+    fprintf(stderr, "COMPILER ERROR on line %llu column %llu\n", token->lineNum,
+            token->colNum);
+    return NULL;
+}
+
 struct ValueData *generateFuncCall(struct Token *token,
                                    struct ModuleData *module, int exprLen) {
     struct FuncData *funcData = stbds_shget(
@@ -487,7 +554,7 @@ LLVMTypeRef *generateType(struct TypeData *type, struct ModuleData *module) {
         return llvmType;
     }
     if (type->type == CLASS) {
-        return stbds_shget(module->classes, type->name).type;
+        return stbds_shget(module->classes, type->name)->type;
     }
     if (type->type == POINTER) {
         LLVMTypeRef *otherType = generateType(type->otherType, module);
@@ -959,12 +1026,75 @@ LLVMValueRef *generateFuncDeclare(struct Token *token,
     return func;
 }
 
+bool generateMacroDefine(struct Token *token, struct ModuleData *module,
+                         int exprLen) {
+    if (exprLen < 3) {
+        fprintf(stderr,
+                "ERROR on line %llu column %llu: Too few arguments for a "
+                "macro definition - expected at least 3 arguments (defmacro "
+                "<name> <arguments> <body1> ...)\n",
+                token->lineNum, token->colNum);
+        return false;
+    }
+    if (((struct Token **)(token->data))[1]->type != IDENT_TOKEN) {
+        fprintf(stderr,
+                "ERROR on line %llu column %llu: Expected an identifier\n",
+                ((struct Token **)(token->data))[1]->lineNum,
+                ((struct Token **)(token->data))[1]->colNum);
+        return false;
+    }
+    if (((struct Token **)(token->data))[2]->type != LIST_TOKEN) {
+        fprintf(
+            stderr,
+            "ERROR on line %llu column %llu: Expected a list of arguments\n",
+            ((struct Token **)(token->data))[1]->lineNum,
+            ((struct Token **)(token->data))[1]->colNum);
+        return false;
+    }
+    char *macroName = (char *)((struct Token **)(token->data))[1]->data;
+    char **args = NULL;
+    char *restArg = NULL;
+    size_t argNum = stbds_arrlen(
+        (struct Token **)(((struct Token **)(token->data))[2]->data));
+    for (size_t i = 0; i < argNum; i++) {
+        struct Token *token2 =
+            ((struct Token **)(((struct Token **)(token->data))[2]->data))[i];
+        if (token2->type != IDENT_TOKEN) {
+            fprintf(stderr,
+                    "ERROR on line %llu column %llu: Expected an identifier\n",
+                    token2->lineNum, token2->colNum);
+            return false;
+        }
+        if (restArg != NULL) {
+            fprintf(stderr,
+                    "ERROR on line %llu column %llu: Can only define one rest "
+                    "argument and it must be at the and of the argument list\n",
+                    token2->lineNum, token2->colNum);
+            return false;
+        }
+        char *name = (char *)token2->data;
+        if (strcmp(name, ":rest") == 0) {
+            i++;
+            restArg = (char *)((
+                struct Token **)(((struct Token **)(token->data))[2]->data))[i]
+                          ->data;
+            continue;
+        }
+        stbds_arrpush(args, name);
+    }
+    struct MacroData *macroData = malloc(sizeof(struct MacroData));
+    *macroData = (struct MacroData){args, restArg, (struct Token **)token->data,
+                                    exprLen, argNum - (restArg != NULL)};
+    stbds_shput(module->macros, macroName, macroData);
+    return true;
+}
+
 LLVMValueRef *generateFuncDefine(struct Token *token, struct ModuleData *module,
                                  int exprLen) {
     if (exprLen < 3) {
         fprintf(stderr,
                 "ERROR on line %llu column %llu: Too few arguments for a "
-                "function declaration - expected at least 2 arguments (defun "
+                "function definition - expected at least 2 arguments (defun "
                 "<name> <arguments> <body1> ...)\n",
                 token->lineNum, token->colNum);
         return NULL;
@@ -999,6 +1129,8 @@ LLVMValueRef *generateFuncDefine(struct Token *token, struct ModuleData *module,
     context->allocaBlock = allocaBlock;
     context->currentBlock = entryBlock;
     context->localVariables = NULL;
+    context->macroArgs = NULL;
+    context->macroRestArg = NULL;
     context->args = NULL;
     context->isVarArg = funcData->isVarArg;
     module->numContexts++;
@@ -2186,6 +2318,9 @@ struct ValueData *generateExpr(struct Token *token, struct ModuleData *module) {
     if (stbds_shgetp_null(module->functions, funcName) != NULL) {
         return generateFuncCall(token, module, exprLen);
     }
+    if (stbds_shgetp_null(module->macros, funcName) != NULL) {
+        return generateMacro(token, module, exprLen);
+    }
     if (strcmp(funcName, "+") == 0) {
         return generateAdd(token, module, exprLen);
     }
@@ -2220,6 +2355,18 @@ struct ValueData *generateExpr(struct Token *token, struct ModuleData *module) {
         }
         struct ValueData *ret = malloc(sizeof(struct ValueData));
         ret->value = val;
+        ret->type = malloc(sizeof(struct TypeData));
+        ret->type->type = NIL;
+        ret->type->length = -1;
+        return ret;
+    }
+    if (strcmp(funcName, "defmacro") == 0) {
+        bool success = generateMacroDefine(token, module, exprLen);
+        if (success == false) {
+            return NULL;
+        }
+        struct ValueData *ret = malloc(sizeof(struct ValueData));
+        ret->value = NULL;
         ret->type = malloc(sizeof(struct TypeData));
         ret->type->type = NIL;
         ret->type->length = -1;
@@ -2381,10 +2528,43 @@ struct ValueData *generateIdent(struct Token *token, struct ModuleData *module,
     return NULL;
 }
 
-struct ValueData *generateDeRef(struct Token *token,
-                                struct ModuleData *module) {
+struct ValueData *generateDeRef(struct Token *token, struct ModuleData *module,
+                                bool charPtrInsteadOfString) {
     struct Token *other = ((struct Token **)token->data)[0];
+    if (other->type == IDENT_TOKEN &&
+        stbds_shgetp_null(module->contexts[module->numContexts - 1]->macroArgs,
+                          (char *)other->data) != NULL) {
+        return generateToken(
+            stbds_shget(module->contexts[module->numContexts - 1]->macroArgs,
+                        (char *)other->data),
+            module, false, true);
+    }
+    struct MacroRestArg *x =
+        module->contexts[module->numContexts - 1]->macroRestArg;
+    if (other->type == IDENT_TOKEN &&
+        module->contexts[module->numContexts - 1]->macroRestArg != NULL &&
+        strcmp(module->contexts[module->numContexts - 1]->macroRestArg->name,
+               (char *)other->data) == 0) {
+        size_t numRestArgs =
+            module->contexts[module->numContexts - 1]->macroRestArg->numValues;
+        for (size_t i = 0; i < numRestArgs; i++) {
+            struct ValueData *val =
+                generateToken(module->contexts[module->numContexts - 1]
+                                  ->macroRestArg->values[i],
+                              module, charPtrInsteadOfString, true);
+            if (val == NULL) {
+                return NULL;
+            }
+            if (i == numRestArgs - 1) {
+                return val;
+            }
+        }
+    }
+
     struct ValueData *val = generateToken(other, module, false, true);
+    if (val == NULL) {
+        return NULL;
+    }
     if (val->type->type != POINTER) {
         fprintf(
             stderr,
@@ -2518,7 +2698,7 @@ struct ValueData *generateToken(struct Token *token, struct ModuleData *module,
         return generateExpr(token, module);
 
     case DE_REF_TOKEN:
-        return generateDeRef(token, module);
+        return generateDeRef(token, module, charPtrInsteadOfString);
 
     case REF_TOKEN:
         return generateRef(token, module);
@@ -2741,10 +2921,10 @@ int generate(struct Token *body, const char *filename,
     LLVMBasicBlockRef entry = LLVMAppendBasicBlock(mainFunc, "entry");
 
     struct ContextData *contextData = malloc(sizeof(struct ContextData));
-    *contextData =
-        (struct ContextData){mainFunc, allocaBlock, entry, NULL, NULL, false};
+    *contextData = (struct ContextData){mainFunc, allocaBlock, entry, NULL,
+                                        NULL,     NULL,        NULL,  false};
     struct ModuleData moduleData = {builder, context, module, NULL, NULL,
-                                    NULL,    NULL,    0,      1};
+                                    NULL,    NULL,    NULL,   0,    1};
     stbds_arrpush(moduleData.contexts, contextData);
     stbds_shput(contextData->localVariables, "dummy",
                 ((struct VariableData){NULL, NULL}));

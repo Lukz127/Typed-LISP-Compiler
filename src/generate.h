@@ -1,5 +1,4 @@
 #pragma once
-#include <llvm-c/BitWriter.h>
 #include <llvm-c/Core.h>
 #include <tokenize.h>
 
@@ -72,10 +71,23 @@ struct VariableList {
     struct VariableData value;
 };
 
+struct MacroArg {
+    char *key;
+    struct Token *value;
+};
+
+struct MacroRestArg {
+    char *name;
+    struct Token **values;
+    size_t numValues;
+};
+
 struct MacroData {
     char **args;
-    char *restArg;      // NULL for no rest arg
-    struct Token *body; // the body to generate
+    char *restArg;       // NULL for no rest arg
+    struct Token **body; // the body to generate
+    size_t bodyLen;
+    size_t numArgs;
 };
 
 struct ContextData {
@@ -84,6 +96,8 @@ struct ContextData {
     LLVMBasicBlockRef currentBlock;
     struct VariableList *localVariables;
     struct VariableList *args;
+    struct MacroArg *macroArgs;
+    struct MacroRestArg *macroRestArg;
     bool isVarArg;
 };
 
@@ -95,12 +109,16 @@ struct ModuleData {
     struct VariableList **variables;
     struct {
         char *key;
-        struct ClassData value;
+        struct ClassData *value;
     } *classes;
     struct {
         char *key;
         struct FuncData *value;
     } *functions;
+    struct {
+        char *key;
+        struct MacroData *value;
+    } *macros;
     size_t nextTempNum;
     size_t numContexts;
 };

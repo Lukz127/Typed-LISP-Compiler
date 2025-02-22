@@ -134,7 +134,7 @@ int tokenize(struct Token *body, FILE *file) {
         token.colNum -= len;
         lastTokenWasRef = false;
 
-        if (buffer[len - 1] == ')' && buffer[0] != ';') {
+        if (buffer[len - 1] == ')' && buffer[0] != ';' && buffer[0] != '\"') {
             len--;
             buffer[len] = '\0';
             closeParen = true;
