@@ -151,9 +151,10 @@ int tokenize(struct Token *body, FILE *file) {
             token.data = malloc(sizeof(char) * (len - 1));
             strncpy(token.data, buffer + 1, len - 2);
             ((char *)token.data)[len - 2] = '\0';
-        } else if (buffer[0] <= '9' && buffer[0] >= '0') {
+        } else if (buffer[0] <= '9' && buffer[0] >= '0' ||
+                   (buffer[0] == '-' && buffer[1] <= '9' && buffer[1] >= '0')) {
             token.type = INT_TOKEN;
-            for (size_t i = 0; i < len; i++) {
+            for (size_t i = buffer[0] == '-'; i < len; i++) {
                 if ((buffer[i] < '0' || buffer[i] > '9') && buffer[i] != '.') {
                     fprintf(
                         stderr,

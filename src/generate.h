@@ -33,11 +33,18 @@ struct VariableData {
     LLVMValueRef *llvmVar;
 };
 
+struct ClassVariableData {
+    struct TypeData *type;
+    LLVMTypeRef *llvmType;
+    LLVMValueRef *defaultValue;
+    size_t index;
+};
+
 struct ClassData {
     LLVMTypeRef *type;
     struct {
         char *key;
-        struct VariableData value;
+        struct ClassVariableData value;
     } *variables;
     size_t numVars;
 };
@@ -64,6 +71,7 @@ struct FuncData {
 struct ValueData {
     struct TypeData *type;
     LLVMValueRef *value;
+    bool isStatic;
 };
 
 struct VariableList {
@@ -94,6 +102,7 @@ struct ContextData {
     LLVMValueRef func;
     LLVMBasicBlockRef allocaBlock;
     LLVMBasicBlockRef currentBlock;
+    LLVMBasicBlockRef outOfBoundsErrorBlock;
     struct VariableList *localVariables;
     struct VariableList *args;
     struct MacroArg *macroArgs;
