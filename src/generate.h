@@ -107,6 +107,7 @@ struct ContextData {
     struct VariableList *args;
     struct MacroArg *macroArgs;
     struct MacroRestArg *macroRestArg;
+    struct TypeData *returnType; // NULL if return is not allowed
     bool isVarArg;
 };
 
