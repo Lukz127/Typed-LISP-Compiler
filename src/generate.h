@@ -40,13 +40,19 @@ struct ClassVariableData {
     size_t index;
 };
 
+struct ClassVariableList {
+    char *key;
+    struct ClassVariableData value;
+};
+
 struct ClassData {
-    LLVMTypeRef *type;
-    struct {
-        char *key;
-        struct ClassVariableData value;
-    } *variables;
+    struct TypeData *classType;
+    LLVMTypeRef *structType;
+    struct ClassVariableList *variables;
+    struct FuncData **initFunctions;
+    size_t numInitFunctions;
     size_t numVars;
+    bool allVarsHaveDefaults;
 };
 
 struct FunctionArgType {
@@ -72,6 +78,19 @@ struct ValueData {
     struct TypeData *type;
     LLVMValueRef *value;
     bool isStatic;
+};
+
+struct ValueDataExtra {
+    struct TypeData *type;
+    LLVMValueRef *value;
+    bool isStatic;
+    size_t lineNum;
+    size_t colNum;
+};
+
+struct NamedValueData {
+    char *key;
+    struct ValueDataExtra *value;
 };
 
 struct VariableList {
