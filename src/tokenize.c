@@ -199,6 +199,7 @@ int tokenize(struct Token *body, FILE *file) {
             } else {
                 refCount++;
                 token.type = DE_REF_TOKEN;
+                insideExpr = false;
             }
             stackSize++;
             if (stackSize > maxStackSize - 1) {

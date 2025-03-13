@@ -7,6 +7,7 @@ typedef enum StaticType {
     UNSIGNED32,
     UNSIGNED64,
     FLOAT32,
+    DOUBLE,
     BOOL,
     CHAR,
     STRING,
@@ -36,7 +37,6 @@ struct VariableData {
 struct ClassVariableData {
     struct TypeData *type;
     LLVMTypeRef *llvmType;
-    LLVMValueRef *defaultValue;
     size_t index;
 };
 
@@ -45,14 +45,17 @@ struct ClassVariableList {
     struct ClassVariableData value;
 };
 
+struct ClassFunctionList {
+    char *key;
+    struct FuncData *value;
+};
+
 struct ClassData {
     struct TypeData *classType;
     LLVMTypeRef *structType;
     struct ClassVariableList *variables;
-    struct FuncData **initFunctions;
-    size_t numInitFunctions;
+    struct ClassFunctionList *functions;
     size_t numVars;
-    bool allVarsHaveDefaults;
 };
 
 struct FunctionArgType {

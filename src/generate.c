@@ -383,11 +383,11 @@ struct ValueData *generateMacro(struct Token *token, struct ModuleData *module,
     return NULL;
 }
 
-struct ValueData *generateFuncCall(struct Token *token,
-                                   struct ModuleData *module, int exprLen) {
-    struct FuncData *funcData = stbds_shget(
-        module->functions, (char *)(((struct Token **)token->data)[0])->data);
-
+struct ValueData *generateFuncDataCall(struct FuncData *funcData,
+                                       struct Token *token, size_t argsStartI,
+                                       size_t exprLen,
+                                       struct ModuleData *module,
+                                       LLVMValueRef *extraFirstArg) {
     bool nextArg = false;
     char *nextArgName = NULL;
     LLVMValueRef *llvmArgs = NULL;
@@ -399,7 +399,14 @@ struct ValueData *generateFuncCall(struct Token *token,
         char *key;
         LLVMValueRef *value;
     } *args = NULL;
-    for (size_t i = 1; i < exprLen; i++) {
+
+    if (extraFirstArg != NULL) {
+        // TODO: add type checking for extra first arg
+        stbds_shput(args, funcData->args[0].name, extraFirstArg);
+        numArgs++;
+    }
+
+    for (size_t i = argsStartI; i < exprLen; i++) {
         struct Token *token2 = ((struct Token **)token->data)[i];
         if (token2->type == IDENT_TOKEN) {
             if (nextArgName == NULL && ((char *)token2->data)[0] == ':') {
@@ -569,7 +576,9 @@ struct ValueData *generateFuncCall(struct Token *token,
             *val = alloca;
         }
         numArgs++;
-        stbds_shput(args, funcData->args[i - 1].name, val);
+        stbds_shput(
+            args, funcData->args[i - argsStartI + (extraFirstArg != NULL)].name,
+            val);
     }
 
     for (size_t i = 0; i < funcData->numArgs; i++) {
@@ -953,6 +962,55 @@ LLVMValueRef *generateNilOptional(LLVMTypeRef *valueType,
     return val;
 }
 
+struct ValueData *generateClassInit(struct Token *token,
+                                    struct ModuleData *module, int exprLen,
+                                    char *className, char *name) {
+    struct Token **tokens = (struct Token **)token->data;
+    struct ClassData *classData = stbds_shget(module->classes, className);
+    if ((exprLen - 1) < classData->numVars) {
+        fprintf(stderr,
+                "ERROR on line %llu column %llu: Too few arguments to "
+                "initialize an instance of class \"%s\"\n",
+                token->lineNum, token->colNum, className);
+        return NULL;
+    }
+    if ((exprLen - 1) > classData->numVars) {
+        fprintf(stderr,
+                "ERROR on line %llu column %llu: Too many arguments to "
+                "initialize an instance of class \"%s\"\n",
+                token->lineNum, token->colNum, className);
+        return NULL;
+    }
+    LLVMValueRef var = LLVMGetUndef(*(classData->structType));
+    for (size_t i = 1; i < exprLen; i++) {
+        LLVMValueRef *val = generateTokenOfType(
+            tokens[i], *(classData->variables[i - 1].value.type), module);
+        if (val == NULL) {
+            return NULL;
+        }
+        var = LLVMBuildInsertValue(module->builder, var, *val, i - 1, "");
+        free(val);
+    }
+    LLVMPositionBuilderAtEnd(
+        module->builder,
+        module->contexts[module->numContexts - 1]->allocaBlock);
+    LLVMValueRef alloca =
+        LLVMBuildAlloca(module->builder, *(classData->structType), name);
+    LLVMPositionBuilderAtEnd(
+        module->builder,
+        module->contexts[module->numContexts - 1]->currentBlock);
+    LLVMBuildStore(module->builder, var, alloca);
+    struct ValueData *ret = malloc(sizeof(struct ValueData));
+    ret->value = malloc(sizeof(LLVMValueRef));
+    *(ret->value) = alloca;
+    ret->type = malloc(sizeof(struct TypeData));
+    ret->type->type = CLASS;
+    ret->type->length = -1;
+    ret->type->name = className;
+    ret->isStatic = false;
+    return ret;
+}
+
 LLVMValueRef *generateVarDef(struct Token *token, struct ModuleData *module,
                              int exprLen) {
     char *name;
@@ -1030,6 +1088,20 @@ LLVMValueRef *generateVarDef(struct Token *token, struct ModuleData *module,
             return NULL;
         }
         llvmVar = val->value;
+        free(val->type);
+        free(val);
+    } else if (type->type == CLASS && initValue->type == EXPR_TOKEN &&
+               ((struct Token **)initValue->data)[0]->type == IDENT_TOKEN &&
+               strcmp((char *)((struct Token **)initValue->data)[0]->data,
+                      type->name) == 0) {
+        struct ValueData *val = generateClassInit(
+            initValue, module, stbds_arrlen((struct Token **)initValue->data),
+            type->name, name);
+        if (val == NULL) {
+            return NULL;
+        }
+        llvmVar = val->value;
+        free(val->type);
         free(val);
     } else {
         LLVMValueRef *llvmInitValue;
@@ -1098,7 +1170,7 @@ LLVMValueRef *generateVarDef(struct Token *token, struct ModuleData *module,
 
 struct FuncData *generateFuncType(struct Token *token,
                                   struct ModuleData *module, bool needsReturn,
-                                  LLVMTypeRef *extraLlvmArg) {
+                                  struct FunctionArgType *extraArg) {
     if (token->type != LIST_TOKEN) {
         fprintf(stderr,
                 "ERROR on line %llu column %llu: Invalid function type "
@@ -1117,8 +1189,10 @@ struct FuncData *generateFuncType(struct Token *token,
     int numRest = 0;
     int numArgs = 0;
 
-    if (extraLlvmArg != NULL) {
-        stbds_arrpush(llvmArgs, *extraLlvmArg);
+    if (extraArg != NULL) {
+        stbds_arrpush(args, *extraArg);
+        stbds_arrpush(llvmArgs, *(extraArg->llvmType));
+        numArgs++;
     }
 
     if (listLen == 1 &&
@@ -1137,6 +1211,19 @@ struct FuncData *generateFuncType(struct Token *token,
         for (size_t i = 0; i < listLen; i++) {
             struct Token *token2 = ((struct Token **)token->data)[i];
             if (i == listLen - 1 && needsReturn) {
+                if (token2->type == IDENT_TOKEN &&
+                    strcmp((char *)token2->data, "nil") == 0) {
+                    struct TypeData *type = malloc(sizeof(struct TypeData));
+                    type->type = NIL;
+                    type->length = -1;
+                    LLVMTypeRef *llvmType = malloc(sizeof(LLVMTypeRef));
+                    *llvmType = LLVMVoidType();
+                    struct FunctionArgType arg = {type, llvmType, ""};
+                    stbds_arrpush(args, arg);
+                    stbds_arrpush(llvmArgs, *llvmType);
+                    numArgs++;
+                    continue;
+                }
                 struct TypeData *type = getType(token2, module);
                 if (type == NULL) {
                     return NULL;
@@ -1320,8 +1407,7 @@ struct FuncData *generateFuncType(struct Token *token,
     }
 
     LLVMTypeRef *funcType = malloc(sizeof(LLVMTypeRef));
-    *funcType = LLVMFunctionType(*llvmRet, llvmArgs,
-                                 numArgs + (extraLlvmArg != NULL), va);
+    *funcType = LLVMFunctionType(*llvmRet, llvmArgs, numArgs, va);
     if (rest) {
         numArgs--;
     }
@@ -1435,94 +1521,86 @@ bool generateMacroDefine(struct Token *token, struct ModuleData *module,
     return true;
 }
 
-LLVMValueRef *generateFuncDataCall(struct FuncData *funcData,
-                                   struct NamedValueData *arguments,
-                                   struct ModuleData *module, size_t lineNum,
-                                   size_t colNum) {
-    LLVMValueRef *llvmArgs = NULL;
-    for (size_t i = 0; i < funcData->numArgs; i++) {
-        if (stbds_shgetp_null(arguments, funcData->args[i].name) != NULL) {
-            struct ValueDataExtra *val =
-                stbds_shget(arguments, funcData->args[i].name);
-            if (!cmptype(val->type, funcData->args[i].type, val->lineNum,
-                         val->colNum, true)) {
-                return NULL;
-            }
-            stbds_arrpush(llvmArgs, *(val->value));
-        }
-        if (!funcData->args[i].optional) {
-            fprintf(stderr,
-                    "ERROR on line %llu column %llu: Required argument \"%s\" "
-                    "not provided\n",
-                    lineNum, colNum, funcData->args[i].name);
-            return NULL;
-        }
-    }
-}
-
-struct ValueData *generateClassInit(struct Token *token,
-                                    struct ModuleData *module, int exprLen) {
-    if (exprLen < 3) {
+LLVMValueRef *generateClassFunc(struct Token *token, struct ModuleData *module,
+                                int exprLen) {
+    if (exprLen < 5) {
         fprintf(stderr,
-                "ERROR on line %llu column %llu: Too few arguments for a "
-                "class initialization function - expected at least 2 arguments "
-                "(class-init <class_name> <arguments> <body1> ...)\n",
+                "ERROR on line %llu column %llu: Too few arguments for class "
+                "function definition, expected (classfun <class_name> "
+                "<function_name> <function_arguments> <body1> ...)",
+                token->lineNum, token->colNum);
+        return NULL;
+    }
+    if (exprLen > 5) {
+        fprintf(stderr,
+                "ERROR on line %llu column %llu: Too many arguments for class "
+                "function definition, expected (classfun <class_name> "
+                "<function_name> <function_arguments> <body1> ...)",
                 token->lineNum, token->colNum);
         return NULL;
     }
     struct Token **tokens = (struct Token **)token->data;
     if (tokens[1]->type != IDENT_TOKEN) {
         fprintf(stderr,
-                "ERROR on line %llu column %llu: Expected an identifier for "
-                "the class this initialization function belongs to\n",
+                "ERROR on line %llu column %llu: Expected an identifier to "
+                "specify the class this class function belongs to\n",
                 tokens[1]->lineNum, tokens[1]->colNum);
         return NULL;
     }
-    if (tokens[2]->type != LIST_TOKEN) {
+    if (tokens[2]->type != IDENT_TOKEN) {
         fprintf(stderr,
-                "ERROR on line %llu column %llu: Expected a list with the "
-                "arguments for this initialization function\n",
+                "ERROR on line %llu column %llu: Expected an identifier to "
+                "specify the class function name\n",
                 tokens[2]->lineNum, tokens[2]->colNum);
         return NULL;
     }
-    if (stbds_shgetp_null(module->classes, (char *)tokens[1]->data) == NULL) {
-        fprintf(stderr, "ERROR on line %llu column %llu: Invalid class %s\n",
-                tokens[1]->lineNum, tokens[1]->colNum, (char *)tokens[1]->data);
+    if (tokens[3]->type != LIST_TOKEN) {
+        fprintf(stderr,
+                "ERROR on line %llu column %llu: Expected a list with the "
+                "class arguments\n",
+                tokens[3]->lineNum, tokens[3]->colNum);
         return NULL;
     }
 
+    char *funcName = (char *)tokens[2]->data;
+
+    if (stbds_shgetp_null(module->classes, (char *)tokens[1]->data) == NULL) {
+        fprintf(stderr,
+                "ERROR on line %llu column %llu: Invalid class \"%s\"\n",
+                tokens[1]->lineNum, tokens[1]->colNum, (char *)tokens[1]->data);
+        return NULL;
+    }
     struct ClassData *classData =
         stbds_shget(module->classes, (char *)tokens[1]->data);
-    LLVMTypeRef *llvmStructPointer = malloc(sizeof(LLVMTypeRef));
-    *llvmStructPointer = LLVMPointerType(*(classData->structType), 0);
+
+    if (stbds_shgetp_null(classData->functions, funcName) != NULL) {
+        fprintf(stderr,
+                "ERROR on line %llu column %llu: Class function \"%s\" for "
+                "class \"%s\"\n",
+                token->lineNum, token->colNum, funcName,
+                (char *)tokens[1]->data);
+        return NULL;
+    }
+
+    struct TypeData *classPtrType = malloc(sizeof(struct TypeData));
+    classPtrType->type = POINTER;
+    classPtrType->otherType = classData->classType;
+    classPtrType->length = -1;
+    LLVMTypeRef *llvmClassPtrType = malloc(sizeof(struct TypeData));
+    *llvmClassPtrType = LLVMPointerType(*(classData->structType), 0);
+    struct FunctionArgType firstArg = {classPtrType, llvmClassPtrType, "this",
+                                       false};
     struct FuncData *funcData =
-        generateFuncType(tokens[2], module, false, llvmStructPointer);
+        generateFuncType(tokens[3], module, true, &firstArg);
     if (funcData == NULL) {
         return NULL;
     }
 
-    for (size_t i = 0; i < classData->numInitFunctions; i++) {
-        if (cmpFunctionArgs(funcData, classData->initFunctions[i])) {
-            fprintf(stderr,
-                    "ERROR on line %llu column %llu: An initialization "
-                    "function with that type already exists for this class\n",
-                    token->lineNum, token->colNum);
-            return NULL;
-        }
-    }
-
-    size_t classNameLen = strlen((char *)tokens[1]->data);
-    char *funcName = malloc(sizeof(char) * classNameLen + 5);
-    funcName = (char *)tokens[1]->data;
-    funcName[classNameLen] = 'I';
-    funcName[classNameLen + 1] = 'n';
-    funcName[classNameLen + 2] = 'i';
-    funcName[classNameLen + 3] = 't';
-    funcName[classNameLen + 4] = '\0';
     LLVMValueRef func =
         LLVMAddFunction(module->module, funcName, *funcData->funcType);
     funcData->function = malloc(sizeof(LLVMValueRef));
     *(funcData->function) = func;
+    stbds_shput(classData->functions, funcName, funcData);
 
     LLVMBasicBlockRef allocaBlock = LLVMAppendBasicBlock(func, "alloca");
     LLVMBasicBlockRef entryBlock = LLVMAppendBasicBlock(func, "entry");
@@ -1543,27 +1621,18 @@ struct ValueData *generateClassInit(struct Token *token,
 
     for (size_t i = 0; i < funcData->numArgs; i++) {
         LLVMValueRef *val = malloc(sizeof(LLVMValueRef));
-        *val = LLVMGetParam(func, i + 1);
+        *val = LLVMGetParam(func, i);
         stbds_shput(context->args, funcData->args[i].name,
                     ((struct VariableData){funcData->args[i].type,
                                            funcData->args[i].llvmType, val}));
     }
     if (funcData->restArg != NULL) {
         LLVMValueRef *val = malloc(sizeof(LLVMValueRef));
-        *val = LLVMGetParam(func, funcData->numArgs + 1);
+        *val = LLVMGetParam(func, funcData->numArgs);
         stbds_shput(context->args, funcData->restArg->name,
                     ((struct VariableData){funcData->restArg->type,
                                            funcData->restArg->llvmType, val}));
     }
-    struct TypeData *structPointerType = malloc(sizeof(struct TypeData));
-    structPointerType->type = POINTER;
-    structPointerType->otherType = classData->classType;
-    structPointerType->length = -1;
-    LLVMValueRef *thisVal = malloc(sizeof(LLVMValueRef));
-    *thisVal = LLVMGetParam(func, 0);
-    stbds_shput(
-        context->args, "this",
-        ((struct VariableData){structPointerType, llvmStructPointer, thisVal}));
 
     stbds_arrpush(module->contexts, context);
     module->numContexts++;
@@ -1571,7 +1640,7 @@ struct ValueData *generateClassInit(struct Token *token,
     LLVMPositionBuilderAtEnd(module->builder, entryBlock);
     bool returned = false;
     struct ValueData *block =
-        generateBlock(token, module, exprLen, 3, &returned);
+        generateBlock(token, module, exprLen, 4, &returned);
     if (block == NULL) {
         return NULL;
     }
@@ -1597,14 +1666,7 @@ struct ValueData *generateClassInit(struct Token *token,
     LLVMPositionBuilderAtEnd(
         module->builder,
         module->contexts[module->numContexts - 1]->currentBlock);
-
-    struct ValueData *ret = malloc(sizeof(struct ValueData));
-    ret->isStatic = false;
-    ret->type = malloc(sizeof(struct TypeData));
-    ret->type->type = NIL;
-    ret->type->length = -1;
-    ret->value = NULL;
-    return ret;
+    return funcData->function;
 }
 
 struct ValueData *generateClassDefine(struct Token *token,
@@ -1614,7 +1676,7 @@ struct ValueData *generateClassDefine(struct Token *token,
                 "ERROR on line %llu column %llu: Too few arguments for class "
                 "definition, expected (defclass <class_name> "
                 "'(<inherited_class1> ...) :variables '('(<var_name1> "
-                "<var_type1> <optional_init_value1>) ...))\n",
+                "<var_type1>) ...))\n",
                 token->lineNum, token->colNum);
         return NULL;
     }
@@ -1623,7 +1685,7 @@ struct ValueData *generateClassDefine(struct Token *token,
                 "ERROR on line %llu column %llu: Too many arguments for class "
                 "definition, expected (defclass <class_name> "
                 "'(<inherited_class1> ...) :variables '('(<var_name1> "
-                "<var_type1> <optional_init_value1>) ...))\n",
+                "<var_type1>) ...))\n",
                 token->lineNum, token->colNum);
         return NULL;
     }
@@ -1645,8 +1707,7 @@ struct ValueData *generateClassDefine(struct Token *token,
     }
     if (tokens[3]->type != IDENT_TOKEN) {
         fprintf(stderr,
-                "ERROR on line %llu column %llu: Expected either "
-                "\":variables\" or \":init-vars\"\n",
+                "ERROR on line %llu column %llu: Expected \":variables\"\n",
                 tokens[3]->lineNum, tokens[3]->colNum);
         return NULL;
     }
@@ -1671,7 +1732,6 @@ struct ValueData *generateClassDefine(struct Token *token,
     bool *isVarInherited = NULL;
     size_t numVars = 0;
     size_t numInherited = 0;
-    bool allVarsHaveDefaults = true;
 
     struct Token **tokens2 = (struct Token **)tokens[2]->data;
     numInherited = stbds_arrlen(tokens2);
@@ -1721,10 +1781,10 @@ struct ValueData *generateClassDefine(struct Token *token,
         }
         struct Token **tokens3 = (struct Token **)tokens2[i]->data;
         size_t tokens3Len = stbds_arrlen(tokens3);
-        if (tokens3Len < 2 || tokens3Len > 3) {
+        if (tokens3Len != 2) {
             fprintf(stderr,
                     "ERROR on line %llu column %llu: Expected a list with the "
-                    "variable name, type and optionally the default value\n",
+                    "variable name and type\n",
                     tokens2[i]->lineNum, tokens2[i]->colNum);
             return NULL;
         }
@@ -1749,20 +1809,6 @@ struct ValueData *generateClassDefine(struct Token *token,
                         tokens2[i]->lineNum, tokens2[i]->colNum, varName);
                 return NULL;
             }
-            if (!cmptype(type, var.type, tokens2[i]->lineNum,
-                         tokens2[i]->colNum, false) ||
-                tokens3Len != 3) {
-                fprintf(stderr,
-                        "ERROR on line %llu column %llu: Cannot change the "
-                        "type of an inherited variable, only the default value "
-                        "can be changed\n",
-                        tokens2[i]->lineNum, tokens2[i]->colNum);
-                return NULL;
-            }
-            var.defaultValue = generateTokenOfType(tokens3[2], *type, module);
-            if (var.defaultValue == NULL) {
-                return NULL;
-            }
             stbds_shput(variables, varName, var);
             isVarInherited[var.index] = false;
             continue;
@@ -1771,24 +1817,18 @@ struct ValueData *generateClassDefine(struct Token *token,
         if (llvmType == NULL) {
             return NULL;
         }
-        LLVMValueRef *initVal = NULL;
-        if (tokens3Len == 3) {
-            initVal = generateTokenOfType(tokens3[2], *type, module);
-            if (initVal == NULL) {
-                return NULL;
-            }
+        if (type->type == STRING || type->type == CLASS ||
+            type->type == VECTOR || type->type == MAP ||
+            type->type == NULLABLE || type->type == ARRAY) {
+            *llvmType = LLVMPointerType(*llvmType, 0);
         }
 
         struct ClassVariableData var =
-            (struct ClassVariableData){type, llvmType, initVal, numVars};
+            (struct ClassVariableData){type, llvmType, numVars};
         stbds_shput(variables, varName, var);
         stbds_arrpush(llvmVars, *llvmType);
         stbds_arrpush(isVarInherited, false);
         numVars++;
-    }
-
-    for (size_t i = 0; i < numVars; i++) {
-        allVarsHaveDefaults &= variables[i].value.defaultValue != NULL;
     }
 
     LLVMTypeRef *llvmStructType = malloc(sizeof(LLVMTypeRef));
@@ -1800,8 +1840,7 @@ struct ValueData *generateClassDefine(struct Token *token,
     classType->name = className;
     classType->length = -1;
     *data =
-        (struct ClassData){classType, llvmStructType, variables,          NULL,
-                           0,         numVars,        allVarsHaveDefaults};
+        (struct ClassData){classType, llvmStructType, variables, NULL, numVars};
     stbds_shput(module->classes, className, data);
 
     struct ValueData *ret = malloc(sizeof(struct ValueData));
@@ -2962,11 +3001,16 @@ struct ValueData *generateNth(struct Token *token, struct ModuleData *module,
                                           module, false, true, false);
     struct ValueData *idxVal = generateToken(((struct Token **)token->data)[1],
                                              module, false, true, false);
-    if (val->type->type != ARRAY && val->type->type != VECTOR &&
-        val->type->type != STRING) {
+    if (val == NULL || idxVal == NULL) {
+        return NULL;
+    }
+    if (val->type->type != POINTER ||
+        val->type->otherType->type != ARRAY &&
+            val->type->otherType->type != VECTOR &&
+            val->type->otherType->type != STRING) {
         fprintf(stderr,
-                "ERROR on line %llu column %llu: Expected a string, a vector "
-                "or an array\n",
+                "ERROR on line %llu column %llu: Expected a string pointer, a "
+                "vector pointer or an array pointer\n",
                 ((struct Token **)token->data)[2]->lineNum,
                 ((struct Token **)token->data)[2]->colNum);
         return NULL;
@@ -2981,10 +3025,10 @@ struct ValueData *generateNth(struct Token *token, struct ModuleData *module,
     }
 
     LLVMValueRef len;
-    LLVMTypeRef *valType = generateType(val->type, module);
-    if (val->type->type == ARRAY) {
+    LLVMTypeRef *valType = generateType(val->type->otherType, module);
+    if (val->type->otherType->type == ARRAY) {
         len = LLVMConstInt(LLVMInt32TypeInContext(module->context),
-                           val->type->length, 0);
+                           val->type->otherType->length, 0);
     } else {
         LLVMValueRef ep = LLVMBuildStructGEP2(module->builder, *valType,
                                               *(val->value), 1, "");
@@ -3021,12 +3065,12 @@ struct ValueData *generateNth(struct Token *token, struct ModuleData *module,
     struct ValueData *ret = malloc(sizeof(struct ValueData));
     ret->value = malloc(sizeof(LLVMValueRef));
     ret->isStatic = false;
-    ret->type = val->type->otherType;
-    LLVMTypeRef *type = generateType(val->type->otherType, module);
+    ret->type = val->type->otherType->otherType;
+    LLVMTypeRef *type = generateType(val->type->otherType->otherType, module);
     if (type == NULL || valType == NULL) {
         return NULL;
     }
-    if (val->type->type == ARRAY) {
+    if (val->type->otherType->type == ARRAY) {
         LLVMValueRef indices[2] = {
             LLVMConstInt(LLVMInt32TypeInContext(module->context), 0, 0),
             *(idxVal->value)};
@@ -3041,8 +3085,7 @@ struct ValueData *generateNth(struct Token *token, struct ModuleData *module,
             arrayEp, "");
         LLVMValueRef ep = LLVMBuildGEP2(module->builder, *type, loadedArrayPtr,
                                         &finalIdx, 1, "");
-        LLVMValueRef element = LLVMBuildLoad2(module->builder, *type, ep, "");
-        *(ret->value) = element;
+        *(ret->value) = LLVMBuildLoad2(module->builder, *type, ep, "");
     }
     free(type);
     free(valType);
@@ -3266,7 +3309,12 @@ struct ValueData *generateExpr(struct Token *token, struct ModuleData *module) {
             return ret;
         }
         if (stbds_shgetp_null(module->functions, funcName) != NULL) {
-            return generateFuncCall(token, module, exprLen);
+            struct FuncData *funcData =
+                stbds_shget(module->functions,
+                            (char *)(((struct Token **)token->data)[0])->data);
+
+            return generateFuncDataCall(funcData, token, 1, exprLen, module,
+                                        NULL);
         }
         if (stbds_shgetp_null(module->macros, funcName) != NULL) {
             return generateMacro(token, module, exprLen);
@@ -3317,12 +3365,6 @@ struct ValueData *generateExpr(struct Token *token, struct ModuleData *module) {
             ret->isStatic = false;
             return ret;
         }
-        if (strcmp(funcName, "defclass") == 0) {
-            return generateClassDefine(token, module, exprLen);
-        }
-        if (strcmp(funcName, "class-init") == 0) {
-            return generateClassInit(token, module, exprLen);
-        }
         if (strcmp(funcName, "defmacro") == 0) {
             bool success = generateMacroDefine(token, module, exprLen);
             if (success == false) {
@@ -3336,58 +3378,25 @@ struct ValueData *generateExpr(struct Token *token, struct ModuleData *module) {
             ret->isStatic = false;
             return ret;
         }
+        if (strcmp(funcName, "defclass") == 0) {
+            return generateClassDefine(token, module, exprLen);
+        }
+        if (strcmp(funcName, "classfun") == 0) {
+            LLVMValueRef *val = generateClassFunc(token, module, exprLen);
+            if (val == NULL) {
+                return NULL;
+            }
+            struct ValueData *ret = malloc(sizeof(struct ValueData));
+            ret->value = val;
+            ret->type = malloc(sizeof(struct TypeData));
+            ret->type->type = NIL;
+            ret->type->length = -1;
+            ret->isStatic = false;
+            return ret;
+        }
     }
     if (stbds_shgetp_null(module->classes, funcName) != NULL) {
-        struct ClassData *classData = stbds_shget(module->classes, funcName);
-        LLVMValueRef var = LLVMGetUndef(classData->structType);
-        for (size_t i = 0; i < classData->numVars; i++) {
-            if (classData->variables[i].value.defaultValue != NULL) {
-                var = LLVMBuildInsertValue(
-                    module->builder, var,
-                    *(classData->variables[i].value.defaultValue), i, "");
-            }
-        }
-
-        if (exprLen == 1) {
-            struct FuncData *funcData;
-            for (size_t i = 0; i < classData->numInitFunctions; i++) {
-                struct FuncData *initFunc = classData->initFunctions[i];
-                bool hasCorrectTypes = true;
-                for (size_t j = 0; j < initFunc->numArgs; j++) {
-                    if (!initFunc->args[j].optional) {
-                        hasCorrectTypes = false;
-                        break;
-                    }
-                }
-                if (!hasCorrectTypes) {
-                    continue;
-                }
-                funcData = initFunc;
-                if (initFunc->numArgs == 0) {
-                    break;
-                }
-            }
-            if (funcData == NULL) {
-                if (!classData->allVarsHaveDefaults) {
-                    fprintf(stderr,
-                            "ERROR on line %llu column %llu: Cannot initialize "
-                            "class with only default values, not all variables "
-                            "have defaults\n",
-                            token->lineNum, token->colNum);
-                    return NULL;
-                }
-                // Initialize with just the default values
-                struct ValueData *ret = malloc(sizeof(struct ValueData));
-                ret->value = malloc(sizeof(LLVMValueRef));
-                *(ret->value) = var;
-                ret->type = malloc(sizeof(struct TypeData));
-                ret->type->type = CLASS;
-                ret->type->length = -1;
-                ret->type->name = funcName;
-                ret->isStatic = false;
-                return ret;
-            }
-        }
+        return generateClassInit(token, module, exprLen, funcName, "");
     }
     if ((stbds_shgetp_null(*(module->variables), funcName) != NULL ||
          stbds_shgetp_null(
@@ -3397,26 +3406,21 @@ struct ValueData *generateExpr(struct Token *token, struct ModuleData *module) {
           stbds_shgetp_null(module->contexts[module->numContexts - 1]->args,
                             funcName) != NULL)) &&
         exprLen > 1) {
-
-        if (stbds_shgetp_null(*(module->variables), funcName) != NULL) {
-            var = stbds_shget(*(module->variables), funcName);
-        } else if (stbds_shgetp_null(module->contexts[module->numContexts - 1]
-                                         ->localVariables,
-                                     funcName) != NULL) {
-            var = stbds_shget(
-                module->contexts[module->numContexts - 1]->localVariables,
-                funcName);
-        } else if (module->contexts[module->numContexts - 1]->args != NULL &&
-                   stbds_shgetp_null(
-                       module->contexts[module->numContexts - 1]->args,
-                       funcName) != NULL) {
-            var = stbds_shget(module->contexts[module->numContexts - 1]->args,
-                              funcName);
-        } else {
-            fprintf(stderr, "COMPILER ERROR on line %llu column %llu\n",
-                    token->lineNum, token->colNum);
+        struct ValueData *val = generateToken(((struct Token **)token->data)[0],
+                                              module, false, true, false);
+        // No need to check if the generated token is a variable, the if
+        // statement this is contained in already checks that
+        if (val == NULL) {
             return NULL;
         }
+
+        var.llvmVar = val->value;
+        var.type = val->type;
+        var.llvmType = generateType(val->type, module);
+        if (var.llvmType == NULL) {
+            return NULL;
+        }
+
         funcName = (char *)((struct Token **)token->data)[1]->data;
         varExists = true;
     }
@@ -3600,10 +3604,80 @@ struct ValueData *generateExpr(struct Token *token, struct ModuleData *module) {
                     token->lineNum, token->colNum, funcName);
             return NULL;
         }
+        if (var.type->type == POINTER && var.type->otherType->type == CLASS) {
+            struct ClassData *classData =
+                stbds_shget(module->classes, var.type->otherType->name);
+            if (stbds_shgetp_null(classData->functions, funcName) != NULL) {
+                struct FuncData *funcData =
+                    stbds_shget(classData->functions, funcName);
+                return generateFuncDataCall(funcData, token, 2, exprLen, module,
+                                            var.llvmVar);
+            }
+            if (stbds_shgetp_null(classData->variables, funcName) != NULL) {
+                struct ClassVariableData varData =
+                    stbds_shget(classData->variables, funcName);
+                LLVMValueRef val = LLVMBuildStructGEP2(
+                    module->builder, *(classData->structType), *(var.llvmVar),
+                    varData.index, "");
+                struct ValueData *ret = malloc(sizeof(struct ValueData));
+                if (varData.type->type == STRING ||
+                    varData.type->type == CLASS ||
+                    varData.type->type == VECTOR || varData.type->type == MAP ||
+                    varData.type->type == NULLABLE ||
+                    varData.type->type == ARRAY) {
+                    LLVMTypeRef *llvmType = generateType(varData.type, module);
+                    if (llvmType == NULL) {
+                        return NULL;
+                    }
+                    val =
+                        LLVMBuildLoad2(module->builder,
+                                       LLVMPointerType(*llvmType, 0), val, "");
+                    free(llvmType);
+                }
+                ret->type = malloc(sizeof(struct TypeData));
+                ret->type->type = POINTER;
+                ret->type->length = -1;
+                ret->type->otherType = varData.type;
+                ret->value = malloc(sizeof(LLVMValueRef));
+                *(ret->value) = val;
+                ret->isStatic = false;
+                return ret;
+            }
+            fprintf(stderr,
+                    "ERROR on line %llu column %llu: Unknown class "
+                    "function or variable \"%s\"\n",
+                    ((struct Token **)token->data)[1]->lineNum,
+                    ((struct Token **)token->data)[1]->colNum, funcName);
+            return NULL;
+        }
+        if (var.type->type == FLOAT32) {
+            if (strcmp(funcName, "double") == 0) {
+                if (exprLen > 2) {
+                    fprintf(
+                        stderr,
+                        "ERROR on line %llu column %llu: Too many arguments "
+                        "for converting a float to a double\n",
+                        token->lineNum, token->colNum);
+                    return NULL;
+                }
+                struct ValueData *ret = malloc(sizeof(struct ValueData));
+                // LLVMValueRef loadedVar = LLVMBuildLoad2(
+                // module->builder, *(var.llvmType), *(var.llvmVar), "");
+                ret->value = malloc(sizeof(LLVMValueRef));
+                *(ret->value) = LLVMBuildFPExt(
+                    module->builder, *(var.llvmVar),
+                    LLVMDoubleTypeInContext(module->context), "");
+                ret->type = malloc(sizeof(struct TypeData));
+                ret->type->type = DOUBLE;
+                ret->type->length = -1;
+                return ret;
+            }
+        }
         fprintf(stderr,
                 "ERROR on line %llu column %llu: Unknown class function or "
                 "variable %s\n",
                 token->lineNum, token->colNum, funcName);
+        return NULL;
     }
     fprintf(stderr, "ERROR on line %llu column %llu: Unknown function \"%s\"\n",
             token->lineNum, token->colNum, funcName);
@@ -3635,37 +3709,12 @@ struct ValueData *generateIdent(struct Token *token, struct ModuleData *module,
     }
     if (var != NULL) {
         LLVMValueRef *loadedVar = malloc(sizeof(LLVMValueRef));
-        if (var->type->type == STRING) {
-            LLVMValueRef dataPtrField = LLVMBuildStructGEP2(
-                module->builder,
-                LLVMStructTypeInContext(
-                    module->context,
-                    (LLVMTypeRef[]){
-                        LLVMPointerType(LLVMInt8TypeInContext(module->context),
-                                        0),
-                        LLVMInt32TypeInContext(module->context),
-                        LLVMInt32TypeInContext(module->context)},
-                    3, 0),
-                *(var->llvmVar), 0, "");
-            *loadedVar = LLVMBuildLoad2(
-                module->builder,
-                LLVMPointerType(LLVMInt8TypeInContext(module->context), 0),
-                dataPtrField, "");
-            struct ValueData *ret = malloc(sizeof(struct ValueData));
-            ret->isStatic = false;
-            ret->type = var->type;
-            ret->value = loadedVar;
-            return ret;
-        }
-        if (var->type->type == ARRAY) {
-            *loadedVar = *(var->llvmVar);
-        } else {
-            *loadedVar = LLVMBuildLoad2(module->builder, *(var->llvmType),
-                                        *(var->llvmVar), "");
-        }
         struct ValueData *ret = malloc(sizeof(struct ValueData));
-        ret->type = var->type;
-        ret->value = loadedVar;
+        ret->type = malloc(sizeof(struct TypeData));
+        ret->type->type = POINTER;
+        ret->type->length = -1;
+        ret->type->otherType = var->type;
+        ret->value = var->llvmVar;
         ret->isStatic = false;
         return ret;
     }
