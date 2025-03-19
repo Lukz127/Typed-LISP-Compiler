@@ -164,12 +164,13 @@ int tokenize(struct Token *body, FILE *file) {
                 }
                 if (buffer[i] == '.') {
                     token.type = FLOAT_TOKEN;
+                    break;
                 }
             }
             if (token.type == FLOAT_TOKEN) {
-                token.data = malloc(sizeof(float));
+                token.data = malloc(sizeof(double));
                 char *p;
-                *(float *)token.data = strtof(buffer, &p);
+                *(double *)token.data = strtod(buffer, &p);
             } else {
                 token.data = malloc(sizeof(int));
                 *(int *)token.data = atoi(buffer);

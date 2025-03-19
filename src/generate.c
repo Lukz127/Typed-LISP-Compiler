@@ -13,7 +13,8 @@ LLVMTypeRef *generateType(struct TypeData *type, struct ModuleData *module);
 struct ValueData *generateToken(struct Token *token, struct ModuleData *module,
                                 bool charPtrInsteadOfString,
                                 bool falseInsteadOfNil,
-                                bool vectorInsteadOfArray);
+                                bool vectorInsteadOfArray,
+                                bool doubleInsteadOfFloat);
 LLVMValueRef *generateTokenOfType(struct Token *token, struct TypeData type,
                                   struct ModuleData *module);
 bool cmptype(struct TypeData *cmpType, struct TypeData *expectedType,
@@ -147,7 +148,7 @@ struct ValueData *generateVectorFromToken(struct Token *token,
     for (size_t i = 0; i < len; i++) {
         struct Token *token2 = ((struct Token **)token->data)[i];
         struct ValueData *val =
-            generateToken(token2, module, false, true, false);
+            generateToken(token2, module, false, true, false, false);
         if (i == 0) {
             elementType = val->type;
         } else if (!cmptype(val->type, elementType, token2->lineNum,
@@ -193,7 +194,7 @@ struct ValueData *generateArray(struct Token *token, struct ModuleData *module,
     for (size_t i = 0; i < len; i++) {
         struct Token *token2 = ((struct Token **)token->data)[i];
         struct ValueData *val =
-            generateToken(token2, module, false, true, false);
+            generateToken(token2, module, false, true, false, false);
         if (val == NULL) {
             return NULL;
         }
@@ -360,8 +361,8 @@ struct ValueData *generateMacro(struct Token *token, struct ModuleData *module,
             restArgs;
     }
     for (size_t i = 3; i < macroData->bodyLen; i++) {
-        struct ValueData *val =
-            generateToken(macroData->body[i], module, false, true, false);
+        struct ValueData *val = generateToken(macroData->body[i], module, false,
+                                              true, false, false);
         if (val == NULL) {
             return NULL;
         }
@@ -484,7 +485,7 @@ struct ValueData *generateFuncDataCall(struct FuncData *funcData,
             numExtraArgs++;
             if (funcData->isVarArg) {
                 struct ValueData *val =
-                    generateToken(token2, module, false, true, false);
+                    generateToken(token2, module, false, true, false, false);
                 if (val == NULL) {
                     return NULL;
                 }
@@ -514,7 +515,8 @@ struct ValueData *generateFuncDataCall(struct FuncData *funcData,
                     token2, module,
                     funcData->restArg->type->otherType->type != STRING,
                     funcData->restArg->type->otherType->type == BOOL,
-                    funcData->restArg->type->otherType->type == VECTOR);
+                    funcData->restArg->type->otherType->type == VECTOR,
+                    funcData->restArg->type->otherType->type == DOUBLE);
                 if (val == NULL) {
                     return NULL;
                 }
@@ -670,7 +672,12 @@ struct TypeData *getType(struct Token *token, struct ModuleData *module) {
         }
         if (strcmp((char *)token->data, "float") == 0) {
             struct TypeData *type = malloc(sizeof(struct TypeData));
-            *type = (struct TypeData){FLOAT32, NULL, NULL, -1, NULL};
+            *type = (struct TypeData){FLOAT, NULL, NULL, -1, NULL};
+            return type;
+        }
+        if (strcmp((char *)token->data, "double") == 0) {
+            struct TypeData *type = malloc(sizeof(struct TypeData));
+            *type = (struct TypeData){DOUBLE, NULL, NULL, -1, NULL};
             return type;
         }
         if (strcmp((char *)token->data, "char") == 0) {
@@ -823,8 +830,12 @@ LLVMTypeRef *generateType(struct TypeData *type, struct ModuleData *module) {
         *llvmType = LLVMInt64TypeInContext(module->context);
         return llvmType;
     }
-    if (type->type == FLOAT32) {
+    if (type->type == FLOAT) {
         *llvmType = LLVMFloatTypeInContext(module->context);
+        return llvmType;
+    }
+    if (type->type == DOUBLE) {
+        *llvmType = LLVMDoubleTypeInContext(module->context);
         return llvmType;
     }
     if (type->type == BOOL) {
@@ -1108,7 +1119,8 @@ LLVMValueRef *generateVarDef(struct Token *token, struct ModuleData *module,
         if (type->type == NULLABLE) {
             struct ValueData *val = generateToken(
                 initValue, module, type->otherType->type != STRING,
-                type->otherType->type == BOOL, type->otherType->type == VECTOR);
+                type->otherType->type == BOOL, type->otherType->type == VECTOR,
+                type->otherType->type == DOUBLE);
             if (val == NULL) {
                 return NULL;
             }
@@ -1138,6 +1150,9 @@ LLVMValueRef *generateVarDef(struct Token *token, struct ModuleData *module,
             }
         } else {
             llvmInitValue = generateTokenOfType(initValue, *type, module);
+            if (llvmInitValue == NULL) {
+                return NULL;
+            }
         }
 
         llvmVar = malloc(sizeof(LLVMValueRef));
@@ -1968,12 +1983,13 @@ struct ValueData *generateAdd(struct Token *token, struct ModuleData *module,
         return NULL;
     }
     struct ValueData *left = generateToken(((struct Token **)token->data)[1],
-                                           module, false, true, false);
+                                           module, false, true, false, false);
     if (left == NULL) {
         return NULL;
     }
-    struct ValueData *right = generateToken(((struct Token **)token->data)[2],
-                                            module, false, true, false);
+    struct ValueData *right =
+        generateToken(((struct Token **)token->data)[2], module, false, true,
+                      false, left->type->type == DOUBLE);
     if (right == NULL) {
         return NULL;
     }
@@ -1982,55 +1998,71 @@ struct ValueData *generateAdd(struct Token *token, struct ModuleData *module,
     val->type = malloc(sizeof(struct TypeData));
     val->isStatic = left->isStatic && right->isStatic;
     val->type->length = -1;
-    if (left->type->type == FLOAT32 || right->type->type == FLOAT32) {
-        if (left->type->type != FLOAT32) {
+    if (left->type->type == DOUBLE || right->type->type == DOUBLE) {
+        if (left->type->type != DOUBLE) {
             if (left->type->type == INT32) {
                 *(left->value) = LLVMBuildSIToFP(
                     module->builder, *(left->value),
-                    LLVMFloatTypeInContext(module->context), "");
+                    LLVMDoubleTypeInContext(module->context), "");
                 printf("WARNING on line %llu column %llu: Converting an "
                        "unsigned integer type to a float during addition, "
-                       "possible lost of data\n",
+                       "possible loss of data\n",
                        token->lineNum, token->colNum);
             } else if (left->type->type == UNSIGNED32) {
                 *(left->value) = LLVMBuildUIToFP(
                     module->builder, *(left->value),
-                    LLVMFloatTypeInContext(module->context), "");
+                    LLVMDoubleTypeInContext(module->context), "");
                 printf("WARNING on line %llu column %llu: Converting an "
-                       "integer type to a float during addition, "
-                       "possible lost of data\n",
+                       "unsigned integer type to a float during addition, "
+                       "possible loss of data\n",
+                       token->lineNum, token->colNum);
+            } else if (left->type->type == FLOAT) {
+                *(left->value) = LLVMBuildFPExt(
+                    module->builder, *(left->value),
+                    LLVMDoubleTypeInContext(module->context), "");
+                printf("WARNING on line %llu column %llu: Converting a "
+                       "double type to a float during addition, "
+                       "possible loss of data\n",
                        token->lineNum, token->colNum);
             } else {
                 fprintf(stderr,
                         "ERROR on line %llu column %llu: Can only add types "
-                        "float, int, uint\n",
+                        "double, float, int, uint\n",
                         token->lineNum, token->colNum);
                 free(val->type);
                 free(val);
                 return NULL;
             }
         }
-        if (right->type->type != FLOAT32) {
+        if (right->type->type != DOUBLE) {
             if (right->type->type == INT32) {
                 *(right->value) = LLVMBuildSIToFP(
                     module->builder, *(right->value),
-                    LLVMFloatTypeInContext(module->context), "");
+                    LLVMDoubleTypeInContext(module->context), "");
                 printf("WARNING on line %llu column %llu: Converting an "
                        "integer type to a float during addition, "
-                       "possible lost of data\n",
+                       "possible loss of data\n",
                        token->lineNum, token->colNum);
             } else if (right->type->type == UNSIGNED32) {
                 *(right->value) = LLVMBuildUIToFP(
                     module->builder, *(right->value),
-                    LLVMFloatTypeInContext(module->context), "");
+                    LLVMDoubleTypeInContext(module->context), "");
                 printf("WARNING on line %llu column %llu: Converting an "
                        "unsigned integer type to a float during addition, "
-                       "possible lost of data\n",
+                       "possible loss of data\n",
+                       token->lineNum, token->colNum);
+            } else if (right->type->type == FLOAT) {
+                *(right->value) = LLVMBuildFPExt(
+                    module->builder, *(right->value),
+                    LLVMDoubleTypeInContext(module->context), "");
+                printf("WARNING on line %llu column %llu: Converting a "
+                       "double type to a float during addition, "
+                       "possible loss of data\n",
                        token->lineNum, token->colNum);
             } else {
                 fprintf(stderr,
                         "ERROR on line %llu column %llu: Can only add types "
-                        "float, int, uint\n",
+                        "double, float, int, uint\n",
                         token->lineNum, token->colNum);
                 free(val->type);
                 free(val);
@@ -2039,13 +2071,87 @@ struct ValueData *generateAdd(struct Token *token, struct ModuleData *module,
         }
         *(val->value) =
             LLVMBuildFAdd(module->builder, *(left->value), *(right->value), "");
-        val->type->type = FLOAT32;
+        val->type->type = DOUBLE;
+    } else if (left->type->type == FLOAT || right->type->type == FLOAT) {
+        if (left->type->type != FLOAT) {
+            if (left->type->type == INT32) {
+                *(left->value) = LLVMBuildSIToFP(
+                    module->builder, *(left->value),
+                    LLVMFloatTypeInContext(module->context), "");
+                printf("WARNING on line %llu column %llu: Converting an "
+                       "unsigned integer type to a float during addition, "
+                       "possible loss of data\n",
+                       token->lineNum, token->colNum);
+            } else if (left->type->type == UNSIGNED32) {
+                *(left->value) = LLVMBuildUIToFP(
+                    module->builder, *(left->value),
+                    LLVMFloatTypeInContext(module->context), "");
+                printf("WARNING on line %llu column %llu: Converting an "
+                       "unsigned integer type to a float during addition, "
+                       "possible loss of data\n",
+                       token->lineNum, token->colNum);
+            } else if (left->type->type == DOUBLE) {
+                *(left->value) = LLVMBuildFPTrunc(
+                    module->builder, *(left->value),
+                    LLVMFloatTypeInContext(module->context), "");
+                printf("WARNING on line %llu column %llu: Converting a "
+                       "double type to a float during addition, "
+                       "possible loss of data\n",
+                       token->lineNum, token->colNum);
+            } else {
+                fprintf(stderr,
+                        "ERROR on line %llu column %llu: Can only add types "
+                        "double, float, int, uint\n",
+                        token->lineNum, token->colNum);
+                free(val->type);
+                free(val);
+                return NULL;
+            }
+        }
+        if (right->type->type != FLOAT) {
+            if (right->type->type == INT32) {
+                *(right->value) = LLVMBuildSIToFP(
+                    module->builder, *(right->value),
+                    LLVMFloatTypeInContext(module->context), "");
+                printf("WARNING on line %llu column %llu: Converting an "
+                       "integer type to a float during addition, "
+                       "possible loss of data\n",
+                       token->lineNum, token->colNum);
+            } else if (right->type->type == UNSIGNED32) {
+                *(right->value) = LLVMBuildUIToFP(
+                    module->builder, *(right->value),
+                    LLVMFloatTypeInContext(module->context), "");
+                printf("WARNING on line %llu column %llu: Converting an "
+                       "unsigned integer type to a float during addition, "
+                       "possible loss of data\n",
+                       token->lineNum, token->colNum);
+            } else if (right->type->type == DOUBLE) {
+                *(right->value) = LLVMBuildFPTrunc(
+                    module->builder, *(right->value),
+                    LLVMFloatTypeInContext(module->context), "");
+                printf("WARNING on line %llu column %llu: Converting a "
+                       "double type to a float during addition, "
+                       "possible loss of data\n",
+                       token->lineNum, token->colNum);
+            } else {
+                fprintf(stderr,
+                        "ERROR on line %llu column %llu: Can only add types "
+                        "double, float, int, uint\n",
+                        token->lineNum, token->colNum);
+                free(val->type);
+                free(val);
+                return NULL;
+            }
+        }
+        *(val->value) =
+            LLVMBuildFAdd(module->builder, *(left->value), *(right->value), "");
+        val->type->type = FLOAT;
     } else {
         if ((left->type->type != INT32 && left->type->type != UNSIGNED32) ||
             (right->type->type != INT32 && right->type->type != UNSIGNED32)) {
             fprintf(stderr,
                     "ERROR on line %llu column %llu: Can only add types "
-                    "float, int, uint\n",
+                    "double, float, int, uint\n",
                     token->lineNum, token->colNum);
             free(val->type);
             free(val);
@@ -2075,12 +2181,13 @@ struct ValueData *generateSubtract(struct Token *token,
         return NULL;
     }
     struct ValueData *left = generateToken(((struct Token **)token->data)[1],
-                                           module, false, true, false);
+                                           module, false, true, false, false);
     if (left == NULL) {
         return NULL;
     }
-    struct ValueData *right = generateToken(((struct Token **)token->data)[2],
-                                            module, false, true, false);
+    struct ValueData *right =
+        generateToken(((struct Token **)token->data)[2], module, false, true,
+                      false, left->type->type == DOUBLE);
     if (right == NULL) {
         return NULL;
     }
@@ -2089,57 +2196,73 @@ struct ValueData *generateSubtract(struct Token *token,
     val->type = malloc(sizeof(struct TypeData));
     val->isStatic = left->isStatic && right->isStatic;
     val->type->length = -1;
-    if (left->type->type == FLOAT32 || right->type->type == FLOAT32) {
-        if (left->type->type != FLOAT32) {
+    if (left->type->type == DOUBLE || right->type->type == DOUBLE) {
+        if (left->type->type != DOUBLE) {
             if (left->type->type == INT32) {
                 *(left->value) = LLVMBuildSIToFP(
                     module->builder, *(left->value),
-                    LLVMFloatTypeInContext(module->context), "");
+                    LLVMDoubleTypeInContext(module->context), "");
                 printf("WARNING on line %llu column %llu: Converting an "
                        "unsigned integer type to a float during subtraction, "
-                       "possible lost of data\n",
+                       "possible loss of data\n",
                        token->lineNum, token->colNum);
             } else if (left->type->type == UNSIGNED32) {
                 *(left->value) = LLVMBuildUIToFP(
                     module->builder, *(left->value),
-                    LLVMFloatTypeInContext(module->context), "");
+                    LLVMDoubleTypeInContext(module->context), "");
                 printf("WARNING on line %llu column %llu: Converting an "
-                       "integer type to a float during subtraction, "
-                       "possible lost of data\n",
+                       "unsigned integer type to a float during subtraction, "
+                       "possible loss of data\n",
+                       token->lineNum, token->colNum);
+            } else if (left->type->type == FLOAT) {
+                *(left->value) = LLVMBuildFPExt(
+                    module->builder, *(left->value),
+                    LLVMDoubleTypeInContext(module->context), "");
+                printf("WARNING on line %llu column %llu: Converting a "
+                       "double type to a float during subtraction, "
+                       "possible loss of data\n",
                        token->lineNum, token->colNum);
             } else {
                 fprintf(
                     stderr,
                     "ERROR on line %llu column %llu: Can only subtract types "
-                    "float, int, uint\n",
+                    "double, float, int, uint\n",
                     token->lineNum, token->colNum);
                 free(val->type);
                 free(val);
                 return NULL;
             }
         }
-        if (right->type->type != FLOAT32) {
+        if (right->type->type != DOUBLE) {
             if (right->type->type == INT32) {
                 *(right->value) = LLVMBuildSIToFP(
                     module->builder, *(right->value),
-                    LLVMFloatTypeInContext(module->context), "");
+                    LLVMDoubleTypeInContext(module->context), "");
                 printf("WARNING on line %llu column %llu: Converting an "
                        "integer type to a float during subtraction, "
-                       "possible lost of data\n",
+                       "possible loss of data\n",
                        token->lineNum, token->colNum);
             } else if (right->type->type == UNSIGNED32) {
                 *(right->value) = LLVMBuildUIToFP(
                     module->builder, *(right->value),
-                    LLVMFloatTypeInContext(module->context), "");
+                    LLVMDoubleTypeInContext(module->context), "");
                 printf("WARNING on line %llu column %llu: Converting an "
                        "unsigned integer type to a float during subtraction, "
-                       "possible lost of data\n",
+                       "possible loss of data\n",
+                       token->lineNum, token->colNum);
+            } else if (right->type->type == FLOAT) {
+                *(right->value) = LLVMBuildFPExt(
+                    module->builder, *(right->value),
+                    LLVMDoubleTypeInContext(module->context), "");
+                printf("WARNING on line %llu column %llu: Converting a "
+                       "double type to a float during subtraction, "
+                       "possible loss of data\n",
                        token->lineNum, token->colNum);
             } else {
                 fprintf(
                     stderr,
                     "ERROR on line %llu column %llu: Can only subtract types "
-                    "float, int, uint\n",
+                    "double, float, int, uint\n",
                     token->lineNum, token->colNum);
                 free(val->type);
                 free(val);
@@ -2148,13 +2271,89 @@ struct ValueData *generateSubtract(struct Token *token,
         }
         *(val->value) =
             LLVMBuildFSub(module->builder, *(left->value), *(right->value), "");
-        val->type->type = FLOAT32;
+        val->type->type = DOUBLE;
+    } else if (left->type->type == FLOAT || right->type->type == FLOAT) {
+        if (left->type->type != FLOAT) {
+            if (left->type->type == INT32) {
+                *(left->value) = LLVMBuildSIToFP(
+                    module->builder, *(left->value),
+                    LLVMFloatTypeInContext(module->context), "");
+                printf("WARNING on line %llu column %llu: Converting an "
+                       "unsigned integer type to a float during subtraction, "
+                       "possible loss of data\n",
+                       token->lineNum, token->colNum);
+            } else if (left->type->type == UNSIGNED32) {
+                *(left->value) = LLVMBuildUIToFP(
+                    module->builder, *(left->value),
+                    LLVMFloatTypeInContext(module->context), "");
+                printf("WARNING on line %llu column %llu: Converting an "
+                       "integer type to a float during subtraction, "
+                       "possible loss of data\n",
+                       token->lineNum, token->colNum);
+            } else if (left->type->type == DOUBLE) {
+                *(left->value) = LLVMBuildFPTrunc(
+                    module->builder, *(left->value),
+                    LLVMFloatTypeInContext(module->context), "");
+                printf("WARNING on line %llu column %llu: Converting an "
+                       "integer type to a float during subtraction, "
+                       "possible loss of data\n",
+                       token->lineNum, token->colNum);
+            } else {
+                fprintf(
+                    stderr,
+                    "ERROR on line %llu column %llu: Can only subtract types "
+                    "double, float, int, uint\n",
+                    token->lineNum, token->colNum);
+                free(val->type);
+                free(val);
+                return NULL;
+            }
+        }
+        if (right->type->type != FLOAT) {
+            if (right->type->type == INT32) {
+                *(right->value) = LLVMBuildSIToFP(
+                    module->builder, *(right->value),
+                    LLVMFloatTypeInContext(module->context), "");
+                printf("WARNING on line %llu column %llu: Converting an "
+                       "integer type to a float during subtraction, "
+                       "possible loss of data\n",
+                       token->lineNum, token->colNum);
+            } else if (right->type->type == UNSIGNED32) {
+                *(right->value) = LLVMBuildUIToFP(
+                    module->builder, *(right->value),
+                    LLVMFloatTypeInContext(module->context), "");
+                printf("WARNING on line %llu column %llu: Converting an "
+                       "unsigned integer type to a float during subtraction, "
+                       "possible loss of data\n",
+                       token->lineNum, token->colNum);
+            } else if (right->type->type == DOUBLE) {
+                *(right->value) = LLVMBuildFPTrunc(
+                    module->builder, *(right->value),
+                    LLVMFloatTypeInContext(module->context), "");
+                printf("WARNING on line %llu column %llu: Converting an "
+                       "unsigned integer type to a float during subtraction, "
+                       "possible loss of data\n",
+                       token->lineNum, token->colNum);
+            } else {
+                fprintf(
+                    stderr,
+                    "ERROR on line %llu column %llu: Can only subtract types "
+                    "double, float, int, uint\n",
+                    token->lineNum, token->colNum);
+                free(val->type);
+                free(val);
+                return NULL;
+            }
+        }
+        *(val->value) =
+            LLVMBuildFSub(module->builder, *(left->value), *(right->value), "");
+        val->type->type = FLOAT;
     } else {
         if ((left->type->type != INT32 && left->type->type != UNSIGNED32) ||
             (right->type->type != INT32 && right->type->type != UNSIGNED32)) {
             fprintf(stderr,
                     "ERROR on line %llu column %llu: Can only subtract types "
-                    "float, int, uint\n",
+                    "double, float, int, uint\n",
                     token->lineNum, token->colNum);
             free(val->type);
             free(val);
@@ -2184,12 +2383,13 @@ struct ValueData *generateMultiply(struct Token *token,
         return NULL;
     }
     struct ValueData *left = generateToken(((struct Token **)token->data)[1],
-                                           module, false, true, false);
+                                           module, false, true, false, false);
     if (left == NULL) {
         return NULL;
     }
-    struct ValueData *right = generateToken(((struct Token **)token->data)[2],
-                                            module, false, true, false);
+    struct ValueData *right =
+        generateToken(((struct Token **)token->data)[2], module, false, true,
+                      false, left->type->type == DOUBLE);
     if (right == NULL) {
         return NULL;
     }
@@ -2198,59 +2398,76 @@ struct ValueData *generateMultiply(struct Token *token,
     val->type = malloc(sizeof(struct TypeData));
     val->isStatic = left->isStatic && right->isStatic;
     val->type->length = -1;
-    if (left->type->type == FLOAT32 || right->type->type == FLOAT32) {
-        if (left->type->type != FLOAT32) {
+    if (left->type->type == DOUBLE || right->type->type == DOUBLE) {
+        if (left->type->type != DOUBLE) {
             if (left->type->type == INT32) {
                 *(left->value) = LLVMBuildSIToFP(
                     module->builder, *(left->value),
-                    LLVMFloatTypeInContext(module->context), "");
+                    LLVMDoubleTypeInContext(module->context), "");
                 printf(
                     "WARNING on line %llu column %llu: Converting an "
                     "unsigned integer type to a float during multiplication, "
-                    "possible lost of data\n",
+                    "possible loss of data\n",
                     token->lineNum, token->colNum);
             } else if (left->type->type == UNSIGNED32) {
                 *(left->value) = LLVMBuildUIToFP(
                     module->builder, *(left->value),
-                    LLVMFloatTypeInContext(module->context), "");
-                printf("WARNING on line %llu column %llu: Converting an "
-                       "integer type to a float during multiplication, "
-                       "possible lost of data\n",
+                    LLVMDoubleTypeInContext(module->context), "");
+                printf(
+                    "WARNING on line %llu column %llu: Converting an "
+                    "unsigned integer type to a float during multiplication, "
+                    "possible loss of data\n",
+                    token->lineNum, token->colNum);
+            } else if (left->type->type == FLOAT) {
+                *(left->value) = LLVMBuildFPExt(
+                    module->builder, *(left->value),
+                    LLVMDoubleTypeInContext(module->context), "");
+                printf("WARNING on line %llu column %llu: Converting a "
+                       "double type to a float during multiplication, "
+                       "possible loss of data\n",
                        token->lineNum, token->colNum);
             } else {
                 fprintf(
                     stderr,
-                    "ERROR on line %llu column %llu: Can only multiply types "
-                    "float, int, uint\n",
+                    "ERROR on line %llu column %llu: Can only subtract types "
+                    "double, float, int, uint\n",
                     token->lineNum, token->colNum);
                 free(val->type);
                 free(val);
                 return NULL;
             }
         }
-        if (right->type->type != FLOAT32) {
+        if (right->type->type != DOUBLE) {
             if (right->type->type == INT32) {
                 *(right->value) = LLVMBuildSIToFP(
                     module->builder, *(right->value),
-                    LLVMFloatTypeInContext(module->context), "");
+                    LLVMDoubleTypeInContext(module->context), "");
                 printf("WARNING on line %llu column %llu: Converting an "
                        "integer type to a float during multiplication, "
-                       "possible lost of data\n",
+                       "possible loss of data\n",
                        token->lineNum, token->colNum);
             } else if (right->type->type == UNSIGNED32) {
                 *(right->value) = LLVMBuildUIToFP(
                     module->builder, *(right->value),
-                    LLVMFloatTypeInContext(module->context), "");
+                    LLVMDoubleTypeInContext(module->context), "");
                 printf(
                     "WARNING on line %llu column %llu: Converting an "
                     "unsigned integer type to a float during multiplication, "
-                    "possible lost of data\n",
+                    "possible loss of data\n",
                     token->lineNum, token->colNum);
+            } else if (right->type->type == FLOAT) {
+                *(right->value) = LLVMBuildFPExt(
+                    module->builder, *(right->value),
+                    LLVMDoubleTypeInContext(module->context), "");
+                printf("WARNING on line %llu column %llu: Converting a "
+                       "double type to a float during multiplication, "
+                       "possible loss of data\n",
+                       token->lineNum, token->colNum);
             } else {
                 fprintf(
                     stderr,
                     "ERROR on line %llu column %llu: Can only multiply types "
-                    "float, int, uint\n",
+                    "double, float, int, uint\n",
                     token->lineNum, token->colNum);
                 free(val->type);
                 free(val);
@@ -2259,13 +2476,92 @@ struct ValueData *generateMultiply(struct Token *token,
         }
         *(val->value) =
             LLVMBuildFMul(module->builder, *(left->value), *(right->value), "");
-        val->type->type = FLOAT32;
+        val->type->type = DOUBLE;
+    } else if (left->type->type == FLOAT || right->type->type == FLOAT) {
+        if (left->type->type != FLOAT) {
+            if (left->type->type == INT32) {
+                *(left->value) = LLVMBuildSIToFP(
+                    module->builder, *(left->value),
+                    LLVMFloatTypeInContext(module->context), "");
+                printf(
+                    "WARNING on line %llu column %llu: Converting an "
+                    "unsigned integer type to a float during multiplication, "
+                    "possible loss of data\n",
+                    token->lineNum, token->colNum);
+            } else if (left->type->type == UNSIGNED32) {
+                *(left->value) = LLVMBuildUIToFP(
+                    module->builder, *(left->value),
+                    LLVMFloatTypeInContext(module->context), "");
+                printf("WARNING on line %llu column %llu: Converting an "
+                       "integer type to a float during multiplication, "
+                       "possible loss of data\n",
+                       token->lineNum, token->colNum);
+            } else if (left->type->type == DOUBLE) {
+                *(left->value) = LLVMBuildFPTrunc(
+                    module->builder, *(left->value),
+                    LLVMFloatTypeInContext(module->context), "");
+                printf("WARNING on line %llu column %llu: Converting an "
+                       "integer type to a float during multiplication, "
+                       "possible loss of data\n",
+                       token->lineNum, token->colNum);
+            } else {
+                fprintf(
+                    stderr,
+                    "ERROR on line %llu column %llu: Can only multiply types "
+                    "double, float, int, uint\n",
+                    token->lineNum, token->colNum);
+                free(val->type);
+                free(val);
+                return NULL;
+            }
+        }
+        if (right->type->type != FLOAT) {
+            if (right->type->type == INT32) {
+                *(right->value) = LLVMBuildSIToFP(
+                    module->builder, *(right->value),
+                    LLVMFloatTypeInContext(module->context), "");
+                printf("WARNING on line %llu column %llu: Converting an "
+                       "integer type to a float during multiplication, "
+                       "possible loss of data\n",
+                       token->lineNum, token->colNum);
+            } else if (right->type->type == UNSIGNED32) {
+                *(right->value) = LLVMBuildUIToFP(
+                    module->builder, *(right->value),
+                    LLVMFloatTypeInContext(module->context), "");
+                printf(
+                    "WARNING on line %llu column %llu: Converting an "
+                    "unsigned integer type to a float during multiplication, "
+                    "possible loss of data\n",
+                    token->lineNum, token->colNum);
+            } else if (right->type->type == DOUBLE) {
+                *(right->value) = LLVMBuildFPTrunc(
+                    module->builder, *(right->value),
+                    LLVMFloatTypeInContext(module->context), "");
+                printf(
+                    "WARNING on line %llu column %llu: Converting an "
+                    "unsigned integer type to a float during multiplication, "
+                    "possible loss of data\n",
+                    token->lineNum, token->colNum);
+            } else {
+                fprintf(
+                    stderr,
+                    "ERROR on line %llu column %llu: Can only multiply types "
+                    "double, float, int, uint\n",
+                    token->lineNum, token->colNum);
+                free(val->type);
+                free(val);
+                return NULL;
+            }
+        }
+        *(val->value) =
+            LLVMBuildFMul(module->builder, *(left->value), *(right->value), "");
+        val->type->type = FLOAT;
     } else {
         if ((left->type->type != INT32 && left->type->type != UNSIGNED32) ||
             (right->type->type != INT32 && right->type->type != UNSIGNED32)) {
             fprintf(stderr,
                     "ERROR on line %llu column %llu: Can only multiply types "
-                    "float, int, uint\n",
+                    "double, float, int, uint\n",
                     token->lineNum, token->colNum);
             free(val->type);
             free(val);
@@ -2295,12 +2591,13 @@ struct ValueData *generateDivide(struct Token *token, struct ModuleData *module,
         return NULL;
     }
     struct ValueData *left = generateToken(((struct Token **)token->data)[1],
-                                           module, false, true, false);
+                                           module, false, true, false, false);
     if (left == NULL) {
         return NULL;
     }
-    struct ValueData *right = generateToken(((struct Token **)token->data)[2],
-                                            module, false, true, false);
+    struct ValueData *right =
+        generateToken(((struct Token **)token->data)[2], module, false, true,
+                      false, left->type->type == DOUBLE);
     if (right == NULL) {
         return NULL;
     }
@@ -2308,15 +2605,89 @@ struct ValueData *generateDivide(struct Token *token, struct ModuleData *module,
     val->type = malloc(sizeof(struct TypeData));
     val->isStatic = left->isStatic && right->isStatic;
     val->type->length = -1;
-    if (left->type->type == FLOAT32 || right->type->type == FLOAT32) {
-        if (left->type->type != FLOAT32) {
+    if (left->type->type == DOUBLE || right->type->type == DOUBLE) {
+        if (left->type->type != DOUBLE) {
+            if (left->type->type == INT32) {
+                *(left->value) = LLVMBuildSIToFP(
+                    module->builder, *(left->value),
+                    LLVMDoubleTypeInContext(module->context), "");
+                printf("WARNING on line %llu column %llu: Converting an "
+                       "unsigned integer type to a float during division, "
+                       "possible loss of data\n",
+                       token->lineNum, token->colNum);
+            } else if (left->type->type == UNSIGNED32) {
+                *(left->value) = LLVMBuildUIToFP(
+                    module->builder, *(left->value),
+                    LLVMDoubleTypeInContext(module->context), "");
+                printf("WARNING on line %llu column %llu: Converting an "
+                       "unsigned integer type to a float during division, "
+                       "possible loss of data\n",
+                       token->lineNum, token->colNum);
+            } else if (left->type->type == FLOAT) {
+                *(left->value) = LLVMBuildFPExt(
+                    module->builder, *(left->value),
+                    LLVMDoubleTypeInContext(module->context), "");
+                printf("WARNING on line %llu column %llu: Converting a "
+                       "double type to a float during division, "
+                       "possible loss of data\n",
+                       token->lineNum, token->colNum);
+            } else {
+                fprintf(stderr,
+                        "ERROR on line %llu column %llu: Can only divide types "
+                        "double, float, int, uint\n",
+                        token->lineNum, token->colNum);
+                free(val->type);
+                free(val);
+                return NULL;
+            }
+        }
+        if (right->type->type != DOUBLE) {
+            if (right->type->type == INT32) {
+                *(right->value) = LLVMBuildSIToFP(
+                    module->builder, *(right->value),
+                    LLVMDoubleTypeInContext(module->context), "");
+                printf("WARNING on line %llu column %llu: Converting an "
+                       "integer type to a float during division, "
+                       "possible loss of data\n",
+                       token->lineNum, token->colNum);
+            } else if (right->type->type == UNSIGNED32) {
+                *(right->value) = LLVMBuildUIToFP(
+                    module->builder, *(right->value),
+                    LLVMDoubleTypeInContext(module->context), "");
+                printf("WARNING on line %llu column %llu: Converting an "
+                       "unsigned integer type to a float during division, "
+                       "possible loss of data\n",
+                       token->lineNum, token->colNum);
+            } else if (right->type->type == FLOAT) {
+                *(right->value) = LLVMBuildFPExt(
+                    module->builder, *(right->value),
+                    LLVMDoubleTypeInContext(module->context), "");
+                printf("WARNING on line %llu column %llu: Converting a "
+                       "double type to a float during division, "
+                       "possible loss of data\n",
+                       token->lineNum, token->colNum);
+            } else {
+                fprintf(stderr,
+                        "ERROR on line %llu column %llu: Can only divide types "
+                        "double, float, int, uint\n",
+                        token->lineNum, token->colNum);
+                free(val->type);
+                free(val);
+                return NULL;
+            }
+        }
+        *(val->value) =
+            LLVMBuildFDiv(module->builder, *(left->value), *(right->value), "");
+        val->type->type = DOUBLE;
+    } else if (left->type->type == FLOAT || right->type->type == FLOAT) {
+        if (left->type->type != FLOAT) {
             if (left->type->type == INT32) {
                 *(left->value) = LLVMBuildSIToFP(
                     module->builder, *(left->value),
                     LLVMFloatTypeInContext(module->context), "");
                 printf("WARNING on line %llu column %llu: Converting an "
                        "unsigned integer type to a float during division, "
-                       "possible lost of data\n",
+                       "possible loss of data\n",
                        token->lineNum, token->colNum);
             } else if (left->type->type == UNSIGNED32) {
                 *(left->value) = LLVMBuildUIToFP(
@@ -2326,17 +2697,25 @@ struct ValueData *generateDivide(struct Token *token, struct ModuleData *module,
                        "integer type to a float during division, possible lost "
                        "of data\n",
                        token->lineNum, token->colNum);
+            } else if (left->type->type == DOUBLE) {
+                *(left->value) = LLVMBuildFPTrunc(
+                    module->builder, *(left->value),
+                    LLVMFloatTypeInContext(module->context), "");
+                printf("WARNING on line %llu column %llu: Converting an "
+                       "integer type to a float during division, possible lost "
+                       "of data\n",
+                       token->lineNum, token->colNum);
             } else {
                 fprintf(stderr,
                         "ERROR on line %llu column %llu: Can only divide types "
-                        "float, int, uint\n",
+                        "double, float, int, uint\n",
                         token->lineNum, token->colNum);
                 free(val->type);
                 free(val);
                 return NULL;
             }
         }
-        if (right->type->type != FLOAT32) {
+        if (right->type->type != FLOAT) {
             if (right->type->type == INT32) {
                 *(right->value) = LLVMBuildSIToFP(
                     module->builder, *(right->value),
@@ -2351,12 +2730,20 @@ struct ValueData *generateDivide(struct Token *token, struct ModuleData *module,
                     LLVMFloatTypeInContext(module->context), "");
                 printf("WARNING on line %llu column %llu: Converting an "
                        "unsigned integer type to a float during division, "
-                       "possible lost of data\n",
+                       "possible loss of data\n",
+                       token->lineNum, token->colNum);
+            } else if (right->type->type == DOUBLE) {
+                *(right->value) = LLVMBuildFPTrunc(
+                    module->builder, *(right->value),
+                    LLVMFloatTypeInContext(module->context), "");
+                printf("WARNING on line %llu column %llu: Converting an "
+                       "unsigned integer type to a float during division, "
+                       "possible loss of data\n",
                        token->lineNum, token->colNum);
             } else {
                 fprintf(stderr,
                         "ERROR on line %llu column %llu: Can only divide types "
-                        "float, int, uint\n",
+                        "double, float, int, uint\n",
                         token->lineNum, token->colNum);
                 free(val->type);
                 free(val);
@@ -2365,13 +2752,13 @@ struct ValueData *generateDivide(struct Token *token, struct ModuleData *module,
         }
         *(val->value) =
             LLVMBuildFDiv(module->builder, *(left->value), *(right->value), "");
-        val->type->type = FLOAT32;
+        val->type->type = FLOAT;
     } else if (left->type->type == INT32 || right->type->type == INT32) {
         if (left->type->type != INT32) {
             if (left->type->type != UNSIGNED32) {
                 fprintf(stderr,
                         "ERROR on line %llu column %llu: Can only divide types "
-                        "float, int, uint\n",
+                        "double, float, int, uint\n",
                         token->lineNum, token->colNum);
                 free(val->type);
                 free(val);
@@ -2386,7 +2773,7 @@ struct ValueData *generateDivide(struct Token *token, struct ModuleData *module,
             if (right->type->type != UNSIGNED32) {
                 fprintf(stderr,
                         "ERROR on line %llu column %llu: Can only divide types "
-                        "float, int, uint\n",
+                        "double, float, int, uint\n",
                         token->lineNum, token->colNum);
                 free(val->type);
                 free(val);
@@ -2406,7 +2793,7 @@ struct ValueData *generateDivide(struct Token *token, struct ModuleData *module,
             fprintf(stderr,
                     "ERROR on line %llu column %llu: Can only "
                     "divide types "
-                    "float, int, uint\n",
+                    "double, float, int, uint\n",
                     token->lineNum, token->colNum);
             free(val->type);
             free(val);
@@ -2417,7 +2804,7 @@ struct ValueData *generateDivide(struct Token *token, struct ModuleData *module,
                 fprintf(stderr,
                         "ERROR on line %llu column %llu: Can only "
                         "divide types "
-                        "float, int, uint\n",
+                        "double, float, int, uint\n",
                         token->lineNum, token->colNum);
                 free(val->type);
                 free(val);
@@ -2433,7 +2820,7 @@ struct ValueData *generateDivide(struct Token *token, struct ModuleData *module,
             if (right->type->type != INT32) {
                 fprintf(stderr,
                         "ERROR on line %llu column %llu: Can only divide types "
-                        "float, int, uint\n",
+                        "double, float, int, uint\n",
                         token->lineNum, token->colNum);
                 free(val->type);
                 free(val);
@@ -2468,12 +2855,13 @@ struct ValueData *generateEquals(struct Token *token, struct ModuleData *module,
         return NULL;
     }
     struct ValueData *left = generateToken(((struct Token **)token->data)[1],
-                                           module, false, true, false);
+                                           module, false, true, false, false);
     if (left == NULL) {
         return NULL;
     }
-    struct ValueData *right = generateToken(((struct Token **)token->data)[2],
-                                            module, false, true, false);
+    struct ValueData *right =
+        generateToken(((struct Token **)token->data)[2], module, false, true,
+                      false, left->type->type == DOUBLE);
     if (right == NULL) {
         return NULL;
     }
@@ -2482,8 +2870,87 @@ struct ValueData *generateEquals(struct Token *token, struct ModuleData *module,
     val->type = malloc(sizeof(struct TypeData));
     val->isStatic = left->isStatic && right->isStatic;
     val->type->length = -1;
-    if (left->type->type == FLOAT32 || right->type->type == FLOAT32) {
-        if (left->type->type != FLOAT32) {
+    if (left->type->type == DOUBLE || right->type->type == DOUBLE) {
+        if (left->type->type != DOUBLE) {
+            if (left->type->type == INT32) {
+                *(left->value) = LLVMBuildSIToFP(
+                    module->builder, *(left->value),
+                    LLVMDoubleTypeInContext(module->context), "");
+                printf(
+                    "WARNING on line %llu column %llu: Converting an "
+                    "unsigned integer type to a float during equals operation, "
+                    "possible loss of data\n",
+                    token->lineNum, token->colNum);
+            } else if (left->type->type == UNSIGNED32) {
+                *(left->value) = LLVMBuildUIToFP(
+                    module->builder, *(left->value),
+                    LLVMDoubleTypeInContext(module->context), "");
+                printf(
+                    "WARNING on line %llu column %llu: Converting an "
+                    "unsigned integer type to a float during equals operation, "
+                    "possible loss of data\n",
+                    token->lineNum, token->colNum);
+            } else if (left->type->type == FLOAT) {
+                *(left->value) = LLVMBuildFPExt(
+                    module->builder, *(left->value),
+                    LLVMDoubleTypeInContext(module->context), "");
+                printf("WARNING on line %llu column %llu: Converting a "
+                       "double type to a float during equals operation, "
+                       "possible loss of data\n",
+                       token->lineNum, token->colNum);
+            } else {
+                fprintf(
+                    stderr,
+                    "ERROR on line %llu column %llu: Can only compare types "
+                    "double, float, int, uint\n",
+                    token->lineNum, token->colNum);
+                free(val->type);
+                free(val);
+                return NULL;
+            }
+        }
+        if (right->type->type != DOUBLE) {
+            if (right->type->type == INT32) {
+                *(right->value) = LLVMBuildSIToFP(
+                    module->builder, *(right->value),
+                    LLVMDoubleTypeInContext(module->context), "");
+                printf("WARNING on line %llu column %llu: Converting an "
+                       "integer type to a float during equals operation, "
+                       "possible loss of data\n",
+                       token->lineNum, token->colNum);
+            } else if (right->type->type == UNSIGNED32) {
+                *(right->value) = LLVMBuildUIToFP(
+                    module->builder, *(right->value),
+                    LLVMDoubleTypeInContext(module->context), "");
+                printf(
+                    "WARNING on line %llu column %llu: Converting an "
+                    "unsigned integer type to a float during equals operation, "
+                    "possible loss of data\n",
+                    token->lineNum, token->colNum);
+            } else if (right->type->type == FLOAT) {
+                *(right->value) = LLVMBuildFPExt(
+                    module->builder, *(right->value),
+                    LLVMDoubleTypeInContext(module->context), "");
+                printf("WARNING on line %llu column %llu: Converting a "
+                       "double type to a float during equals operation, "
+                       "possible loss of data\n",
+                       token->lineNum, token->colNum);
+            } else {
+                fprintf(
+                    stderr,
+                    "ERROR on line %llu column %llu: Can only compare types "
+                    "double, float, int, uint\n",
+                    token->lineNum, token->colNum);
+                free(val->type);
+                free(val);
+                return NULL;
+            }
+        }
+        *(val->value) = LLVMBuildFCmp(module->builder, LLVMRealOEQ,
+                                      *(left->value), *(right->value), "");
+        val->type->type = FLOAT;
+    } else if (left->type->type == FLOAT || right->type->type == FLOAT) {
+        if (left->type->type != FLOAT) {
             if (left->type->type == INT32) {
                 *(left->value) = LLVMBuildSIToFP(
                     module->builder, *(left->value),
@@ -2491,7 +2958,7 @@ struct ValueData *generateEquals(struct Token *token, struct ModuleData *module,
                 printf(
                     "WARNING on line %llu column %llu: Converting an "
                     "unsigned integer type to a float during equals operation, "
-                    "possible lost of data\n",
+                    "possible loss of data\n",
                     token->lineNum, token->colNum);
             } else if (left->type->type == UNSIGNED32) {
                 *(left->value) = LLVMBuildUIToFP(
@@ -2499,27 +2966,35 @@ struct ValueData *generateEquals(struct Token *token, struct ModuleData *module,
                     LLVMFloatTypeInContext(module->context), "");
                 printf("WARNING on line %llu column %llu: Converting an "
                        "integer type to a float during equals operation, "
-                       "possible lost of data\n",
+                       "possible loss of data\n",
+                       token->lineNum, token->colNum);
+            } else if (left->type->type == DOUBLE) {
+                *(left->value) = LLVMBuildFPTrunc(
+                    module->builder, *(left->value),
+                    LLVMFloatTypeInContext(module->context), "");
+                printf("WARNING on line %llu column %llu: Converting an "
+                       "integer type to a float during equals operation, "
+                       "possible loss of data\n",
                        token->lineNum, token->colNum);
             } else {
                 fprintf(
                     stderr,
                     "ERROR on line %llu column %llu: Can only compare types "
-                    "float, int, uint\n",
+                    "double, float, int, uint\n",
                     token->lineNum, token->colNum);
                 free(val->type);
                 free(val);
                 return NULL;
             }
         }
-        if (right->type->type != FLOAT32) {
+        if (right->type->type != FLOAT) {
             if (right->type->type == INT32) {
                 *(right->value) = LLVMBuildSIToFP(
                     module->builder, *(right->value),
                     LLVMFloatTypeInContext(module->context), "");
                 printf("WARNING on line %llu column %llu: Converting an "
                        "integer type to a float during equals operation, "
-                       "possible lost of data\n",
+                       "possible loss of data\n",
                        token->lineNum, token->colNum);
             } else if (right->type->type == UNSIGNED32) {
                 *(right->value) = LLVMBuildUIToFP(
@@ -2528,13 +3003,22 @@ struct ValueData *generateEquals(struct Token *token, struct ModuleData *module,
                 printf(
                     "WARNING on line %llu column %llu: Converting an "
                     "unsigned integer type to a float during equals operation, "
-                    "possible lost of data\n",
+                    "possible loss of data\n",
+                    token->lineNum, token->colNum);
+            } else if (right->type->type == DOUBLE) {
+                *(right->value) = LLVMBuildFPTrunc(
+                    module->builder, *(right->value),
+                    LLVMFloatTypeInContext(module->context), "");
+                printf(
+                    "WARNING on line %llu column %llu: Converting an "
+                    "unsigned integer type to a float during equals operation, "
+                    "possible loss of data\n",
                     token->lineNum, token->colNum);
             } else {
                 fprintf(
                     stderr,
                     "ERROR on line %llu column %llu: Can only compare types "
-                    "float, int, uint\n",
+                    "double, float, int, uint\n",
                     token->lineNum, token->colNum);
                 free(val->type);
                 free(val);
@@ -2549,7 +3033,7 @@ struct ValueData *generateEquals(struct Token *token, struct ModuleData *module,
             (right->type->type != INT32 && right->type->type != UNSIGNED32)) {
             fprintf(stderr,
                     "ERROR on line %llu column %llu: Can only compare types "
-                    "float, int, uint\n",
+                    "double, float, int, uint\n",
                     token->lineNum, token->colNum);
             free(val->type);
             free(val);
@@ -2579,12 +3063,13 @@ struct ValueData *generateLessThan(struct Token *token,
         return NULL;
     }
     struct ValueData *left = generateToken(((struct Token **)token->data)[1],
-                                           module, false, true, false);
+                                           module, false, true, false, false);
     if (left == NULL) {
         return NULL;
     }
-    struct ValueData *right = generateToken(((struct Token **)token->data)[2],
-                                            module, false, true, false);
+    struct ValueData *right =
+        generateToken(((struct Token **)token->data)[2], module, false, true,
+                      false, left->type->type == DOUBLE);
     if (right == NULL) {
         return NULL;
     }
@@ -2593,15 +3078,91 @@ struct ValueData *generateLessThan(struct Token *token,
     val->isStatic = left->isStatic && right->isStatic;
     val->type = malloc(sizeof(struct TypeData));
     val->type->length = -1;
-    if (left->type->type == FLOAT32 || right->type->type == FLOAT32) {
-        if (left->type->type != FLOAT32) {
+    if (left->type->type == DOUBLE || right->type->type == DOUBLE) {
+        if (left->type->type != DOUBLE) {
+            if (left->type->type == INT32) {
+                *(left->value) = LLVMBuildSIToFP(
+                    module->builder, *(left->value),
+                    LLVMDoubleTypeInContext(module->context), "");
+                printf("WARNING on line %llu column %llu: Converting an "
+                       "unsigned integer type to a float during less than "
+                       "operation, possible loss of data\n",
+                       token->lineNum, token->colNum);
+            } else if (left->type->type == UNSIGNED32) {
+                *(left->value) = LLVMBuildUIToFP(
+                    module->builder, *(left->value),
+                    LLVMDoubleTypeInContext(module->context), "");
+                printf("WARNING on line %llu column %llu: Converting an "
+                       "unsigned integer type to a float during less than "
+                       "operation, possible loss of data\n",
+                       token->lineNum, token->colNum);
+            } else if (left->type->type == FLOAT) {
+                *(left->value) = LLVMBuildFPExt(
+                    module->builder, *(left->value),
+                    LLVMDoubleTypeInContext(module->context), "");
+                printf("WARNING on line %llu column %llu: Converting a "
+                       "double type to a float during less than operation, "
+                       "possible loss of data\n",
+                       token->lineNum, token->colNum);
+            } else {
+                fprintf(
+                    stderr,
+                    "ERROR on line %llu column %llu: Can only compare types "
+                    "double, float, int, uint\n",
+                    token->lineNum, token->colNum);
+                free(val->type);
+                free(val);
+                return NULL;
+            }
+        }
+        if (right->type->type != DOUBLE) {
+            if (right->type->type == INT32) {
+                *(right->value) = LLVMBuildSIToFP(
+                    module->builder, *(right->value),
+                    LLVMDoubleTypeInContext(module->context), "");
+                printf("WARNING on line %llu column %llu: Converting an "
+                       "integer type to a float during less than operation, "
+                       "possible loss of data\n",
+                       token->lineNum, token->colNum);
+            } else if (right->type->type == UNSIGNED32) {
+                *(right->value) = LLVMBuildUIToFP(
+                    module->builder, *(right->value),
+                    LLVMDoubleTypeInContext(module->context), "");
+                printf("WARNING on line %llu column %llu: Converting an "
+                       "unsigned integer type to a float during less than "
+                       "operation, possible loss of data\n",
+                       token->lineNum, token->colNum);
+            } else if (right->type->type == FLOAT) {
+                *(right->value) = LLVMBuildFPExt(
+                    module->builder, *(right->value),
+                    LLVMDoubleTypeInContext(module->context), "");
+                printf("WARNING on line %llu column %llu: Converting a "
+                       "double type to a float during less than operation, "
+                       "possible loss of data\n",
+                       token->lineNum, token->colNum);
+            } else {
+                fprintf(
+                    stderr,
+                    "ERROR on line %llu column %llu: Can only compare types "
+                    "double, float, int, uint\n",
+                    token->lineNum, token->colNum);
+                free(val->type);
+                free(val);
+                return NULL;
+            }
+        }
+        *(val->value) = LLVMBuildFCmp(module->builder, LLVMRealOLT,
+                                      *(left->value), *(right->value), "");
+        val->type->type = FLOAT;
+    } else if (left->type->type == FLOAT || right->type->type == FLOAT) {
+        if (left->type->type != FLOAT) {
             if (left->type->type == INT32) {
                 *(left->value) = LLVMBuildSIToFP(
                     module->builder, *(left->value),
                     LLVMFloatTypeInContext(module->context), "");
                 printf("WARNING on line %llu column %llu: Converting an "
                        "unsigned integer type to a float during less than "
-                       "operation, possible lost of data\n",
+                       "operation, possible loss of data\n",
                        token->lineNum, token->colNum);
             } else if (left->type->type == UNSIGNED32) {
                 *(left->value) = LLVMBuildUIToFP(
@@ -2609,27 +3170,35 @@ struct ValueData *generateLessThan(struct Token *token,
                     LLVMFloatTypeInContext(module->context), "");
                 printf("WARNING on line %llu column %llu: Converting an "
                        "integer type to a float during less than operation, "
-                       "possible lost of data\n",
+                       "possible loss of data\n",
+                       token->lineNum, token->colNum);
+            } else if (left->type->type == DOUBLE) {
+                *(left->value) = LLVMBuildFPTrunc(
+                    module->builder, *(left->value),
+                    LLVMFloatTypeInContext(module->context), "");
+                printf("WARNING on line %llu column %llu: Converting an "
+                       "integer type to a float during less than operation, "
+                       "possible loss of data\n",
                        token->lineNum, token->colNum);
             } else {
                 fprintf(
                     stderr,
                     "ERROR on line %llu column %llu: Can only compare types "
-                    "float, int, uint\n",
+                    "double, float, int, uint\n",
                     token->lineNum, token->colNum);
                 free(val->type);
                 free(val);
                 return NULL;
             }
         }
-        if (right->type->type != FLOAT32) {
+        if (right->type->type != FLOAT) {
             if (right->type->type == INT32) {
                 *(right->value) = LLVMBuildSIToFP(
                     module->builder, *(right->value),
                     LLVMFloatTypeInContext(module->context), "");
                 printf("WARNING on line %llu column %llu: Converting an "
                        "integer type to a float during less than operation, "
-                       "possible lost of data\n",
+                       "possible loss of data\n",
                        token->lineNum, token->colNum);
             } else if (right->type->type == UNSIGNED32) {
                 *(right->value) = LLVMBuildUIToFP(
@@ -2637,13 +3206,21 @@ struct ValueData *generateLessThan(struct Token *token,
                     LLVMFloatTypeInContext(module->context), "");
                 printf("WARNING on line %llu column %llu: Converting an "
                        "unsigned integer type to a float during less than "
-                       "operation, possible lost of data\n",
+                       "operation, possible loss of data\n",
+                       token->lineNum, token->colNum);
+            } else if (right->type->type == DOUBLE) {
+                *(right->value) = LLVMBuildFPTrunc(
+                    module->builder, *(right->value),
+                    LLVMFloatTypeInContext(module->context), "");
+                printf("WARNING on line %llu column %llu: Converting an "
+                       "unsigned integer type to a float during less than "
+                       "operation, possible loss of data\n",
                        token->lineNum, token->colNum);
             } else {
                 fprintf(
                     stderr,
                     "ERROR on line %llu column %llu: Can only compare types "
-                    "float, int, uint\n",
+                    "double, float, int, uint\n",
                     token->lineNum, token->colNum);
                 free(val->type);
                 free(val);
@@ -2659,7 +3236,7 @@ struct ValueData *generateLessThan(struct Token *token,
                 fprintf(
                     stderr,
                     "ERROR on line %llu column %llu: Can only compare types "
-                    "float, int, uint\n",
+                    "double, float, int, uint\n",
                     token->lineNum, token->colNum);
                 free(val->type);
                 free(val);
@@ -2667,7 +3244,7 @@ struct ValueData *generateLessThan(struct Token *token,
             }
             printf("WARNING on line %llu column %llu: Converting an unsigned "
                    "integer to an integer during less than operation, possible "
-                   "lost of data\n",
+                   "loss of data\n",
                    token->lineNum, token->colNum);
         }
         if (right->type->type != INT32) {
@@ -2675,7 +3252,7 @@ struct ValueData *generateLessThan(struct Token *token,
                 fprintf(
                     stderr,
                     "ERROR on line %llu column %llu: Can only compare types "
-                    "float, int, uint\n",
+                    "double, float, int, uint\n",
                     token->lineNum, token->colNum);
                 free(val->type);
                 free(val);
@@ -2683,7 +3260,7 @@ struct ValueData *generateLessThan(struct Token *token,
             }
             printf("WARNING on line %llu column %llu: Converting an unsigned "
                    "integer to an integer during less than operation, possible "
-                   "lost of data\n",
+                   "loss of data\n",
                    token->lineNum, token->colNum);
         }
         *(val->value) = LLVMBuildICmp(module->builder, LLVMIntSLT,
@@ -2694,7 +3271,7 @@ struct ValueData *generateLessThan(struct Token *token,
             (right->type->type != INT32 && right->type->type != UNSIGNED32)) {
             fprintf(stderr,
                     "ERROR on line %llu column %llu: Can only "
-                    "compare types float, int, uint\n",
+                    "compare types double, float, int, uint\n",
                     token->lineNum, token->colNum);
             free(val->type);
             free(val);
@@ -2704,7 +3281,7 @@ struct ValueData *generateLessThan(struct Token *token,
             if (left->type->type != INT32) {
                 fprintf(stderr,
                         "ERROR on line %llu column %llu: Can only "
-                        "compare types float, int, uint\n",
+                        "compare types double, float, int, uint\n",
                         token->lineNum, token->colNum);
                 free(val->type);
                 free(val);
@@ -2712,14 +3289,14 @@ struct ValueData *generateLessThan(struct Token *token,
             }
             printf("WARNING on line %llu column %llu: Converting an "
                    "integer to an unsigned integer during less than operation, "
-                   "possible lost of data\n",
+                   "possible loss of data\n",
                    token->lineNum, token->colNum);
         }
         if (right->type->type != UNSIGNED32) {
             if (right->type->type != INT32) {
                 fprintf(stderr,
                         "ERROR on line %llu column %llu: Can only divide types "
-                        "float, int, uint\n",
+                        "double, float, int, uint\n",
                         token->lineNum, token->colNum);
                 free(val->type);
                 free(val);
@@ -2727,7 +3304,7 @@ struct ValueData *generateLessThan(struct Token *token,
             }
             printf("WARNING on line %llu column %llu: Converting an integer "
                    "to an unsigned integer during less than operation, "
-                   "possible lost of data\n",
+                   "possible loss of data\n",
                    token->lineNum, token->colNum);
         }
         *(val->value) = LLVMBuildICmp(module->builder, LLVMIntULT,
@@ -2755,12 +3332,13 @@ struct ValueData *generateGreaterThan(struct Token *token,
         return NULL;
     }
     struct ValueData *left = generateToken(((struct Token **)token->data)[1],
-                                           module, false, true, false);
+                                           module, false, true, false, false);
     if (left == NULL) {
         return NULL;
     }
-    struct ValueData *right = generateToken(((struct Token **)token->data)[2],
-                                            module, false, true, false);
+    struct ValueData *right =
+        generateToken(((struct Token **)token->data)[2], module, false, true,
+                      false, left->type->type == DOUBLE);
     if (right == NULL) {
         return NULL;
     }
@@ -2769,15 +3347,91 @@ struct ValueData *generateGreaterThan(struct Token *token,
     val->isStatic = left->isStatic && right->isStatic;
     val->type = malloc(sizeof(struct TypeData));
     val->type->length = -1;
-    if (left->type->type == FLOAT32 || right->type->type == FLOAT32) {
-        if (left->type->type != FLOAT32) {
+    if (left->type->type == DOUBLE || right->type->type == DOUBLE) {
+        if (left->type->type != DOUBLE) {
+            if (left->type->type == INT32) {
+                *(left->value) = LLVMBuildSIToFP(
+                    module->builder, *(left->value),
+                    LLVMDoubleTypeInContext(module->context), "");
+                printf("WARNING on line %llu column %llu: Converting an "
+                       "unsigned integer type to a float during more than "
+                       "operation, possible loss of data\n",
+                       token->lineNum, token->colNum);
+            } else if (left->type->type == UNSIGNED32) {
+                *(left->value) = LLVMBuildUIToFP(
+                    module->builder, *(left->value),
+                    LLVMDoubleTypeInContext(module->context), "");
+                printf("WARNING on line %llu column %llu: Converting an "
+                       "unsigned integer type to a float during more than "
+                       "operation, possible loss of data\n",
+                       token->lineNum, token->colNum);
+            } else if (left->type->type == FLOAT) {
+                *(left->value) = LLVMBuildFPExt(
+                    module->builder, *(left->value),
+                    LLVMDoubleTypeInContext(module->context), "");
+                printf("WARNING on line %llu column %llu: Converting a "
+                       "double type to a float during more than operation, "
+                       "possible loss of data\n",
+                       token->lineNum, token->colNum);
+            } else {
+                fprintf(
+                    stderr,
+                    "ERROR on line %llu column %llu: Can only compare types "
+                    "double, float, int, uint\n",
+                    token->lineNum, token->colNum);
+                free(val->type);
+                free(val);
+                return NULL;
+            }
+        }
+        if (right->type->type != DOUBLE) {
+            if (right->type->type == INT32) {
+                *(right->value) = LLVMBuildSIToFP(
+                    module->builder, *(right->value),
+                    LLVMDoubleTypeInContext(module->context), "");
+                printf("WARNING on line %llu column %llu: Converting an "
+                       "integer type to a float during more than operation, "
+                       "possible loss of data\n",
+                       token->lineNum, token->colNum);
+            } else if (right->type->type == UNSIGNED32) {
+                *(right->value) = LLVMBuildUIToFP(
+                    module->builder, *(right->value),
+                    LLVMDoubleTypeInContext(module->context), "");
+                printf("WARNING on line %llu column %llu: Converting an "
+                       "unsigned integer type to a float during more than "
+                       "operation, possible loss of data\n",
+                       token->lineNum, token->colNum);
+            } else if (right->type->type == FLOAT) {
+                *(right->value) = LLVMBuildFPExt(
+                    module->builder, *(right->value),
+                    LLVMDoubleTypeInContext(module->context), "");
+                printf("WARNING on line %llu column %llu: Converting a "
+                       "double type to a float during more than operation, "
+                       "possible loss of data\n",
+                       token->lineNum, token->colNum);
+            } else {
+                fprintf(
+                    stderr,
+                    "ERROR on line %llu column %llu: Can only compare types "
+                    "double, float, int, uint\n",
+                    token->lineNum, token->colNum);
+                free(val->type);
+                free(val);
+                return NULL;
+            }
+        }
+        *(val->value) = LLVMBuildFCmp(module->builder, LLVMRealOGT,
+                                      *(left->value), *(right->value), "");
+        val->type->type = FLOAT;
+    } else if (left->type->type == FLOAT || right->type->type == FLOAT) {
+        if (left->type->type != FLOAT) {
             if (left->type->type == INT32) {
                 *(left->value) = LLVMBuildSIToFP(
                     module->builder, *(left->value),
                     LLVMFloatTypeInContext(module->context), "");
                 printf("WARNING on line %llu column %llu: Converting an "
                        "unsigned integer type to a float during greater than "
-                       "operation, possible lost of data\n",
+                       "operation, possible loss of data\n",
                        token->lineNum, token->colNum);
             } else if (left->type->type == UNSIGNED32) {
                 *(left->value) = LLVMBuildUIToFP(
@@ -2785,27 +3439,35 @@ struct ValueData *generateGreaterThan(struct Token *token,
                     LLVMFloatTypeInContext(module->context), "");
                 printf("WARNING on line %llu column %llu: Converting an "
                        "integer type to a float during greater than operation, "
-                       "possible lost of data\n",
+                       "possible loss of data\n",
+                       token->lineNum, token->colNum);
+            } else if (left->type->type == DOUBLE) {
+                *(left->value) = LLVMBuildFPTrunc(
+                    module->builder, *(left->value),
+                    LLVMFloatTypeInContext(module->context), "");
+                printf("WARNING on line %llu column %llu: Converting an "
+                       "integer type to a float during greater than operation, "
+                       "possible loss of data\n",
                        token->lineNum, token->colNum);
             } else {
                 fprintf(
                     stderr,
                     "ERROR on line %llu column %llu: Can only compare types "
-                    "float, int, uint\n",
+                    "double, float, int, uint\n",
                     token->lineNum, token->colNum);
                 free(val->type);
                 free(val);
                 return NULL;
             }
         }
-        if (right->type->type != FLOAT32) {
+        if (right->type->type != FLOAT) {
             if (right->type->type == INT32) {
                 *(right->value) = LLVMBuildSIToFP(
                     module->builder, *(right->value),
                     LLVMFloatTypeInContext(module->context), "");
                 printf("WARNING on line %llu column %llu: Converting an "
                        "integer type to a float during greater than operation, "
-                       "possible lost of data\n",
+                       "possible loss of data\n",
                        token->lineNum, token->colNum);
             } else if (right->type->type == UNSIGNED32) {
                 *(right->value) = LLVMBuildUIToFP(
@@ -2813,13 +3475,21 @@ struct ValueData *generateGreaterThan(struct Token *token,
                     LLVMFloatTypeInContext(module->context), "");
                 printf("WARNING on line %llu column %llu: Converting an "
                        "unsigned integer type to a float during greater than "
-                       "operation, possible lost of data\n",
+                       "operation, possible loss of data\n",
+                       token->lineNum, token->colNum);
+            } else if (right->type->type == DOUBLE) {
+                *(right->value) = LLVMBuildFPTrunc(
+                    module->builder, *(right->value),
+                    LLVMFloatTypeInContext(module->context), "");
+                printf("WARNING on line %llu column %llu: Converting an "
+                       "unsigned integer type to a float during greater than "
+                       "operation, possible loss of data\n",
                        token->lineNum, token->colNum);
             } else {
                 fprintf(
                     stderr,
                     "ERROR on line %llu column %llu: Can only compare types "
-                    "float, int, uint\n",
+                    "double, float, int, uint\n",
                     token->lineNum, token->colNum);
                 free(val->type);
                 free(val);
@@ -2835,7 +3505,7 @@ struct ValueData *generateGreaterThan(struct Token *token,
                 fprintf(
                     stderr,
                     "ERROR on line %llu column %llu: Can only compare types "
-                    "float, int, uint\n",
+                    "double, float, int, uint\n",
                     token->lineNum, token->colNum);
                 free(val->type);
                 free(val);
@@ -2844,7 +3514,7 @@ struct ValueData *generateGreaterThan(struct Token *token,
             printf(
                 "WARNING on line %llu column %llu: Converting an unsigned "
                 "integer to an integer during greater than operation, possible "
-                "lost of data\n",
+                "loss of data\n",
                 token->lineNum, token->colNum);
         }
         if (right->type->type != INT32) {
@@ -2852,7 +3522,7 @@ struct ValueData *generateGreaterThan(struct Token *token,
                 fprintf(
                     stderr,
                     "ERROR on line %llu column %llu: Can only compare types "
-                    "float, int, uint\n",
+                    "double, float, int, uint\n",
                     token->lineNum, token->colNum);
                 free(val->type);
                 free(val);
@@ -2861,7 +3531,7 @@ struct ValueData *generateGreaterThan(struct Token *token,
             printf(
                 "WARNING on line %llu column %llu: Converting an unsigned "
                 "integer to an integer during greater than operation, possible "
-                "lost of data\n",
+                "loss of data\n",
                 token->lineNum, token->colNum);
         }
         *(val->value) = LLVMBuildICmp(module->builder, LLVMIntSGT,
@@ -2872,7 +3542,7 @@ struct ValueData *generateGreaterThan(struct Token *token,
             (right->type->type != INT32 && right->type->type != UNSIGNED32)) {
             fprintf(stderr,
                     "ERROR on line %llu column %llu: Can only "
-                    "compare types float, int, uint\n",
+                    "compare types double, float, int, uint\n",
                     token->lineNum, token->colNum);
             free(val->type);
             free(val);
@@ -2882,7 +3552,7 @@ struct ValueData *generateGreaterThan(struct Token *token,
             if (left->type->type != INT32) {
                 fprintf(stderr,
                         "ERROR on line %llu column %llu: Can only "
-                        "compare types float, int, uint\n",
+                        "compare types double, float, int, uint\n",
                         token->lineNum, token->colNum);
                 free(val->type);
                 free(val);
@@ -2891,14 +3561,14 @@ struct ValueData *generateGreaterThan(struct Token *token,
             printf(
                 "WARNING on line %llu column %llu: Converting an "
                 "integer to an unsigned integer during greater than operation, "
-                "possible lost of data\n",
+                "possible loss of data\n",
                 token->lineNum, token->colNum);
         }
         if (right->type->type != UNSIGNED32) {
             if (right->type->type != INT32) {
                 fprintf(stderr,
                         "ERROR on line %llu column %llu: Can only divide types "
-                        "float, int, uint\n",
+                        "double, float, int, uint\n",
                         token->lineNum, token->colNum);
                 free(val->type);
                 free(val);
@@ -2906,7 +3576,7 @@ struct ValueData *generateGreaterThan(struct Token *token,
             }
             printf("WARNING on line %llu column %llu: Converting an integer "
                    "to an unsigned integer during greater than operation, "
-                   "possible lost of data\n",
+                   "possible loss of data\n",
                    token->lineNum, token->colNum);
         }
         *(val->value) = LLVMBuildICmp(module->builder, LLVMIntUGT,
@@ -2928,7 +3598,7 @@ struct ValueData *generateBlock(struct Token *token, struct ModuleData *module,
             *returned = true;
         }
         struct ValueData *val =
-            generateToken(token2, module, false, true, false);
+            generateToken(token2, module, false, true, false, false);
         if (val == NULL) {
             return NULL;
         }
@@ -2998,9 +3668,9 @@ struct ValueData *generateNth(struct Token *token, struct ModuleData *module,
         return NULL;
     }
     struct ValueData *val = generateToken(((struct Token **)token->data)[2],
-                                          module, false, true, false);
+                                          module, false, true, false, false);
     struct ValueData *idxVal = generateToken(((struct Token **)token->data)[1],
-                                             module, false, true, false);
+                                             module, false, true, false, false);
     if (val == NULL || idxVal == NULL) {
         return NULL;
     }
@@ -3268,8 +3938,9 @@ struct ValueData *generateExpr(struct Token *token, struct ModuleData *module) {
                     token->lineNum, token->colNum);
             return NULL;
         }
-        struct ValueData *val = generateToken(((struct Token **)token->data)[0],
-                                              module, false, true, false);
+        struct ValueData *val =
+            generateToken(((struct Token **)token->data)[0], module, false,
+                          true, false, false);
         if (val == NULL) {
             return NULL;
         }
@@ -3406,8 +4077,9 @@ struct ValueData *generateExpr(struct Token *token, struct ModuleData *module) {
           stbds_shgetp_null(module->contexts[module->numContexts - 1]->args,
                             funcName) != NULL)) &&
         exprLen > 1) {
-        struct ValueData *val = generateToken(((struct Token **)token->data)[0],
-                                              module, false, true, false);
+        struct ValueData *val =
+            generateToken(((struct Token **)token->data)[0], module, false,
+                          true, false, false);
         // No need to check if the generated token is a variable, the if
         // statement this is contained in already checks that
         if (val == NULL) {
@@ -3650,7 +4322,7 @@ struct ValueData *generateExpr(struct Token *token, struct ModuleData *module) {
                     ((struct Token **)token->data)[1]->colNum, funcName);
             return NULL;
         }
-        if (var.type->type == FLOAT32) {
+        if (var.type->type == FLOAT) {
             if (strcmp(funcName, "double") == 0) {
                 if (exprLen > 2) {
                     fprintf(
@@ -3765,7 +4437,7 @@ struct ValueData *generateDeRef(struct Token *token, struct ModuleData *module,
         return generateToken(
             stbds_shget(module->contexts[module->numContexts - 1]->macroArgs,
                         (char *)other->data),
-            module, false, true, false);
+            module, false, true, false, false);
     }
     if (other->type == IDENT_TOKEN &&
         module->contexts[module->numContexts - 1]->macroRestArg != NULL &&
@@ -3774,10 +4446,10 @@ struct ValueData *generateDeRef(struct Token *token, struct ModuleData *module,
         size_t numRestArgs =
             module->contexts[module->numContexts - 1]->macroRestArg->numValues;
         for (size_t i = 0; i < numRestArgs; i++) {
-            struct ValueData *val =
-                generateToken(module->contexts[module->numContexts - 1]
-                                  ->macroRestArg->values[i],
-                              module, charPtrInsteadOfString, true, false);
+            struct ValueData *val = generateToken(
+                module->contexts[module->numContexts - 1]
+                    ->macroRestArg->values[i],
+                module, charPtrInsteadOfString, true, false, false);
             if (val == NULL) {
                 return NULL;
             }
@@ -3787,7 +4459,8 @@ struct ValueData *generateDeRef(struct Token *token, struct ModuleData *module,
         }
     }
 
-    struct ValueData *val = generateToken(other, module, false, true, false);
+    struct ValueData *val =
+        generateToken(other, module, false, true, false, false);
     if (val == NULL) {
         return NULL;
     }
@@ -3818,7 +4491,8 @@ struct ValueData *generateDeRef(struct Token *token, struct ModuleData *module,
 
 struct ValueData *generateRef(struct Token *token, struct ModuleData *module) {
     struct Token *other = ((struct Token **)token->data)[0];
-    struct ValueData *val = generateToken(other, module, false, true, false);
+    struct ValueData *val =
+        generateToken(other, module, false, true, false, false);
     LLVMTypeRef *llvmType = generateType(val->type, module);
     if (llvmType == NULL) {
         return NULL;
@@ -3853,7 +4527,14 @@ LLVMValueRef *generateInt(struct Token *token, struct ModuleData *module) {
 LLVMValueRef *generateFloat(struct Token *token, struct ModuleData *module) {
     LLVMValueRef *val = malloc(sizeof(LLVMValueRef));
     *val = LLVMConstReal(LLVMFloatTypeInContext(module->context),
-                         (double)(*(float *)token->data));
+                         (*(double *)token->data));
+    return val;
+}
+
+LLVMValueRef *generateDouble(struct Token *token, struct ModuleData *module) {
+    LLVMValueRef *val = malloc(sizeof(LLVMValueRef));
+    *val = LLVMConstReal(LLVMDoubleTypeInContext(module->context),
+                         (*(double *)token->data));
     return val;
 }
 
@@ -3892,7 +4573,8 @@ LLVMValueRef *generateCharPtr(struct Token *token, struct ModuleData *module) {
 struct ValueData *generateToken(struct Token *token, struct ModuleData *module,
                                 bool charPtrInsteadOfString,
                                 bool falseInsteadOfNil,
-                                bool vectorInsteadOfArray) {
+                                bool vectorInsteadOfArray,
+                                bool doubleInsteadOfFloat) {
     struct ValueData *ret = malloc(sizeof(struct ValueData));
     LLVMValueRef *val;
     switch (token->type) {
@@ -3909,10 +4591,19 @@ struct ValueData *generateToken(struct Token *token, struct ModuleData *module,
         return ret;
 
     case FLOAT_TOKEN:
+        if (doubleInsteadOfFloat) {
+            val = generateDouble(token, module);
+            ret->value = val;
+            ret->type = malloc(sizeof(struct TypeData));
+            ret->type->type = DOUBLE;
+            ret->type->length = -1;
+            ret->isStatic = true;
+            return ret;
+        }
         val = generateFloat(token, module);
         ret->value = val;
         ret->type = malloc(sizeof(struct TypeData));
-        ret->type->type = FLOAT32;
+        ret->type->type = FLOAT;
         ret->type->length = -1;
         ret->isStatic = true;
         return ret;
@@ -4128,7 +4819,7 @@ bool cmptype(struct TypeData *cmpType, struct TypeData *expectedType,
                 lineNum, colNum);
     }
     if (expectedType->type != cmpType->type && printError &&
-        expectedType->type == FLOAT32) {
+        expectedType->type == FLOAT) {
         fprintf(stderr, "ERROR on line %llu column %llu: Expected a float\n",
                 lineNum, colNum);
     }
@@ -4162,10 +4853,12 @@ LLVMValueRef *generateTokenOfType(struct Token *token, struct TypeData type,
     if (type.type == NULLABLE) {
         val = generateToken(token, module, type.otherType->type != STRING,
                             type.otherType->type == BOOL,
-                            type.otherType->type == VECTOR);
+                            type.otherType->type == VECTOR,
+                            type.otherType->type == DOUBLE);
     } else {
-        val = generateToken(token, module, type.type != STRING,
-                            type.type == BOOL, type.type == VECTOR);
+        val =
+            generateToken(token, module, type.type != STRING, type.type == BOOL,
+                          type.type == VECTOR, type.type == DOUBLE);
     }
     if (val == NULL) {
         return NULL;
@@ -4255,8 +4948,9 @@ int generate(struct Token *body, const char *filename,
     LLVMPositionBuilderAtEnd(builder, entry);
     size_t numTokens = stbds_arrlen((struct Token **)body->data);
     for (size_t i = 0; i < numTokens; i++) {
-        struct ValueData *val = generateToken(((struct Token **)body->data)[i],
-                                              &moduleData, false, false, false);
+        struct ValueData *val =
+            generateToken(((struct Token **)body->data)[i], &moduleData, false,
+                          false, false, false);
         if (val == NULL) {
             return 1;
         }

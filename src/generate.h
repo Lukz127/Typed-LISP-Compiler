@@ -6,7 +6,7 @@ typedef enum StaticType {
     INT32,
     UNSIGNED32,
     UNSIGNED64,
-    FLOAT32,
+    FLOAT,
     DOUBLE,
     BOOL,
     CHAR,
