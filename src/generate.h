@@ -155,5 +155,15 @@ struct ModuleData {
     size_t numContexts;
 };
 
+struct ToGenerateData {
+    struct Token *body;
+    char *filePath;
+    size_t mainIdx;
+};
+
 int generate(struct Token *body, const char *filename,
-             const char *inputFilename);
+             const char *inputFilename, char *mainName);
+bool outlineFile(struct Token *body, struct ModuleData *module);
+
+size_t numImports = 0;
+struct ToGenerateData *toGenerate = NULL;
