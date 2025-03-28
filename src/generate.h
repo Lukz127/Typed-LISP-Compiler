@@ -1,6 +1,16 @@
 #pragma once
+#include <limits.h>
 #include <llvm-c/Core.h>
 #include <tokenize.h>
+
+char *toAbsolutePath(const char *relative_path, char *absolute_path,
+                     size_t size) {
+#ifdef _WIN32
+    return _fullpath(absolute_path, relative_path, size);
+#else
+    return realpath(relative_path, absolute_path);
+#endif
+}
 
 typedef enum StaticType {
     INT32,
@@ -125,12 +135,17 @@ struct ContextData {
     LLVMBasicBlockRef allocaBlock;
     LLVMBasicBlockRef currentBlock;
     LLVMBasicBlockRef outOfBoundsErrorBlock;
+    LLVMBasicBlockRef *continueBlock; // Null if continue is not allowed
+    LLVMBasicBlockRef *breakBlock;    // Null if break is not allowed
     struct VariableList *localVariables;
     struct VariableList *args;
     struct MacroArg *macroArgs;
     struct MacroRestArg *macroRestArg;
     struct TypeData *returnType; // NULL if return is not allowed
+    LLVMValueRef *loopIndexVar;  // NULL if not in an indexed loop
+    LLVMValueRef **mallocedVarsToFree;
     bool isVarArg;
+    bool unreachable;
 };
 
 struct ModuleData {
@@ -153,6 +168,8 @@ struct ModuleData {
     } *macros;
     size_t nextTempNum;
     size_t numContexts;
+    char **outlinedFiles;
+    char **toOutline;
 };
 
 struct ToGenerateData {
@@ -163,7 +180,13 @@ struct ToGenerateData {
 
 int generate(struct Token *body, const char *filename,
              const char *inputFilename, char *mainName);
+struct TypeData *getType(struct Token *token, struct ModuleData *module);
+LLVMTypeRef *generateType(struct TypeData *type, struct ModuleData *module);
 bool outlineFile(struct Token *body, struct ModuleData *module);
 
 size_t numImports = 0;
 struct ToGenerateData *toGenerate = NULL;
+struct {
+    char *key;
+    char *value;
+} *mainNames = NULL;

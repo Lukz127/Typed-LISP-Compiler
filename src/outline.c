@@ -158,7 +158,6 @@ bool outlineVarDef(struct Token *token, struct ModuleData *module,
     }
 
     name = (char *)(((struct Token **)token->data)[1]->data);
-    initValue = ((struct Token **)token->data)[3];
     type = getType(((struct Token **)token->data)[2], module);
 
     if (type == NULL) {
@@ -368,6 +367,47 @@ bool outlineClassDefine(struct Token *token, struct ModuleData *module,
     return true;
 }
 
+bool outlineImport(struct Token *token, struct ModuleData *module,
+                   int exprLen) {
+    if (exprLen < 2) {
+        fprintf(
+            stderr,
+            "ERROR on line %llu column %llu: Too few arguments for import\n",
+            token->lineNum, token->colNum);
+        return false;
+    }
+    if (exprLen > 2) {
+        fprintf(
+            stderr,
+            "ERROR on line %llu column %llu: Too many arguments for import\n",
+            token->lineNum, token->colNum);
+        return false;
+    }
+    if (((struct Token **)token->data)[1]->type != STRING_TOKEN) {
+        fprintf(stderr,
+                "ERROR on line %llu column %llu: Expected a string containing "
+                "the path to the file to import without the file extension\n",
+                ((struct Token **)token->data)[1]->lineNum,
+                ((struct Token **)token->data)[1]->colNum);
+        return false;
+    }
+
+    char *relFilePath2 = (char *)((struct Token **)token->data)[1]->data;
+    size_t pathLen = strlen(relFilePath2);
+    char *relFilePath = malloc((pathLen + 5) * sizeof(char));
+    sprintf_s(relFilePath, (pathLen + 5), "%s.sao", relFilePath2);
+    char *filePath = calloc(FILENAME_MAX, sizeof(char));
+    if (toAbsolutePath(relFilePath, filePath, FILENAME_MAX) == NULL) {
+        fprintf(stderr,
+                "ERROR on line %llu column %llu: Error resolving path %s\n",
+                token->lineNum, token->colNum, relFilePath);
+        return false;
+    };
+
+    stbds_arrpush(module->toOutline, filePath);
+    return true;
+}
+
 bool outlineClassFunc(struct Token *token, struct ModuleData *module,
                       int exprLen) {
     if (exprLen < 5) {
@@ -492,6 +532,10 @@ bool outlineFile(struct Token *body, struct ModuleData *module) {
             }
         } else if (strcmp(funcName, "classfun") == 0) {
             if (!outlineClassFunc(token, module, exprLen)) {
+                return false;
+            }
+        } else if (strcmp(funcName, "import") == 0) {
+            if (!outlineImport(token, module, exprLen)) {
                 return false;
             }
         }

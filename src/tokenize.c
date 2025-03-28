@@ -107,6 +107,7 @@ int tokenize(struct Token *body, FILE *file) {
     bool stopAtString = false;
     bool lastTokenWasRef = false;
     unsigned int refCount = 0;
+    unsigned int immediateRefCount = 0;
 
     *body = (struct Token){EXPR_TOKEN, NULL, 0, 0};
     struct Token ****stack = malloc(sizeof(struct Token ***) * 16);
@@ -195,10 +196,12 @@ int tokenize(struct Token *body, FILE *file) {
                 token.type = LIST_TOKEN;
             } else if (buffer[0] == '*') {
                 refCount++;
+                immediateRefCount++;
                 token.type = REF_TOKEN;
                 lastTokenWasRef = true;
             } else {
                 refCount++;
+                immediateRefCount++;
                 token.type = DE_REF_TOKEN;
                 insideExpr = false;
             }
@@ -229,10 +232,10 @@ int tokenize(struct Token *body, FILE *file) {
             pushToken = true;
         }
 
-        if (refCount > 0) {
-            if (!insideExpr && token.type != IDENT_TOKEN &&
-                token.type != REF_TOKEN && token.type != DE_REF_TOKEN &&
-                token.type != EXPR_TOKEN && token.type != NULL_TOKEN) {
+        if (refCount > 0 && !insideExpr) {
+            if (token.type != IDENT_TOKEN && token.type != REF_TOKEN &&
+                token.type != DE_REF_TOKEN && token.type != EXPR_TOKEN &&
+                token.type != NULL_TOKEN) {
                 fprintf(stderr,
                         "ERROR on line %llu, column %llu: Can only "
                         "reference and dereference an "
@@ -240,21 +243,26 @@ int tokenize(struct Token *body, FILE *file) {
                         token.lineNum, token.colNum);
                 return 1;
             }
-            if (token.type == IDENT_TOKEN && !insideExpr ||
+            if (token.type == IDENT_TOKEN ||
                 closeParen &&
                     (baseStack[stackSize - 1]->type == REF_TOKEN ||
                      baseStack[stackSize - 1]->type == DE_REF_TOKEN)) {
-                refCount--;
-                stackSize--;
+                stackSize -= immediateRefCount;
+                refCount -= immediateRefCount;
+                immediateRefCount = 0;
                 if (refCount == 0) {
                     insideExpr = false;
                 }
             }
         }
-
         if (closeParen) {
             closeParen = false;
             stackSize--;
+            if (refCount > 0 && insideExpr) {
+                stackSize -= immediateRefCount;
+                refCount -= immediateRefCount;
+                immediateRefCount = 0;
+            }
         }
 
         len = 0;
