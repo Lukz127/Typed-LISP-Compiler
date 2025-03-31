@@ -2,7 +2,7 @@
 
 This is an example of using Raylib with Typed LISP. Currently, there are no menus, collisions or score etc, but it demonstrates what can be done with Typed LISP. Press space to jump.
 
-Special thanks to Samuel Custodio for the [assets](https://github.com/samuelcust/flappy-bird-assets).
+Special thanks to Samuel Custodio for the [assets](https://github.com/samuelcust/flappy-bird-assets) licensed under the [MIT License](https://github.com/samuelcust/flappy-bird-assets/blob/master/LICENSE).
 
 ## Compiling
 

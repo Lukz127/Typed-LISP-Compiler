@@ -1,4 +1,5 @@
-// This project uses stb_image.h under the MIT License.
+// This project uses stb_image.h under the MIT License
+// and LLVM under the Apache License Version 2.0
 #define STB_DS_IMPLEMENTATION
 #include <generate.c>
 #include <generate.h>
