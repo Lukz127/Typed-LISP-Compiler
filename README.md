@@ -4,8 +4,22 @@ This is a compiler for my own programming language - Typed LISP written in C.
 
 The `/examples/` directory contains multiple examples, that explain how the language works.
 
+To get syntax highlighting in VSCode you can install the [Typed LISP VSCode support](https://github.com/Lukz127/TLISP-VSCode-support/releases) extension
+
 Special thanks to Sean Barrett for the `stb_ds.h` library.
 Special thanks to Samuel Custodio for the [assets](https://github.com/samuelcust/flappy-bird-assets) for the Raylib Flappy Bird example.
+
+## Table of Contents
+
+- [Typed LISP Compiler](#typed-lisp-compiler)
+  - [Table of Contents](#table-of-contents)
+  - [Compilation](#compilation)
+    - [Dependencies](#dependencies)
+    - [Instructions](#instructions)
+  - [Usage](#usage)
+    - [Full example of compiling](#full-example-of-compiling)
+      - [Loops example](#loops-example)
+      - [Raylib Flappy Bird example (without using `compile.bat`)](#raylib-flappy-bird-example-without-using-compilebat)
 
 ## Compilation
 
