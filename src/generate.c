@@ -493,8 +493,7 @@ struct ValueData *generateFuncDataCall(struct FuncData *funcData,
                     fprintf(stderr,
                             "ERROR on line %llu column %llu: Unknown argument "
                             "\"%s\"\n",
-                            token2->lineNum, token2->colNum,
-                            (char *)token2->data);
+                            token2->lineNum, token2->colNum, nextArgName);
                     return NULL;
                 }
                 continue;
@@ -584,6 +583,7 @@ struct ValueData *generateFuncDataCall(struct FuncData *funcData,
                 return NULL;
             }
             stbds_shput(args, nextArgName, val);
+            numArgs++;
             nextArgName = NULL;
             continue;
         }
@@ -732,8 +732,7 @@ struct ValueData *generateFuncDataCall(struct FuncData *funcData,
             if (newVal != NULL) {
                 val = newVal;
             }
-        } else if (funcData->args[i - 1].type->type == STRING ||
-                   funcData->args[i - 1].type->type == CLASS ||
+        } else if (funcData->args[i - 1].type->type == CLASS ||
                    funcData->args[i - 1].type->type == ARRAY ||
                    funcData->args[i - 1].type->type == VECTOR ||
                    funcData->args[i - 1].type->type == MAP ||
@@ -768,6 +767,7 @@ struct ValueData *generateFuncDataCall(struct FuncData *funcData,
             }
             LLVMTypeRef *type =
                 generateType(funcData->args[i].type->otherType, module);
+
             LLVMTypeRef *type2 = generateType(funcData->args[i].type, module);
             if (type == NULL || type2 == NULL) {
                 return NULL;
@@ -785,9 +785,9 @@ struct ValueData *generateFuncDataCall(struct FuncData *funcData,
             LLVMSetGlobalConstant(*globalVal, 1);
             LLVMSetInitializer(*globalVal, optionalValue);
             stbds_shput(args, funcData->args[i].name, globalVal);
-            numArgs++;
             free(type);
             free(type2);
+            numArgs++;
         }
         LLVMValueRef arg = *stbds_shget(args, funcData->args[i].name);
         stbds_arrpush(llvmArgs, arg);

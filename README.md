@@ -20,6 +20,7 @@ Special thanks to Samuel Custodio for the [assets](https://github.com/samuelcust
     - [Full example of compiling](#full-example-of-compiling)
       - [Loops example](#loops-example)
       - [Raylib Flappy Bird example (without using `compile.bat`)](#raylib-flappy-bird-example-without-using-compilebat)
+  - [This project also uses libraries / resources:](#this-project-also-uses-libraries--resources)
 
 ## Compilation
 
@@ -82,3 +83,9 @@ llc program -filetype=obj -o program.o
 @rem clang -o program.exe program.o is for linking the object file and the rest is for linking it with libraries
 clang -o program.exe program.o -I%RAYLIB_PATH%\include -L%RAYLIB_PATH%\lib -lmsvcrt -lraylib -lOpenGL32 -lGdi32 -lWinMM -lkernel32 -lshell32 -lUser32 -Xlinker /NODEFAULTLIB:libcmt
 ```
+
+## This project also uses libraries / resources:
+
+- **LLVM**, which is licensed under the [Apache License Version 2.0](https://github.com/llvm/llvm-project/blob/main/LICENSE.TXT)
+- **stb_ds**, which is licensed under the [MIT License/public domain](https://github.com/Lukz127/Typed-LISP-Compiler/blob/master/src/include/stb_ds.h)
+- **flappy-bird-assets**, which are licensed under the [MIT License](https://github.com/samuelcust/flappy-bird-assets/blob/master/LICENSE)

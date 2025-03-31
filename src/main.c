@@ -15,7 +15,7 @@ int main(int argc, char **argv) {
         return 1;
     }
     const char *filenameIn = argv[1];
-    // const char *filenameIn = "../examples/loops/main.tlisp";
+    // const char *filenameIn = "../examples/raylib-flappy-bird/main.tlisp";
     if (strcmp(filenameIn, "--help") == 0 || strcmp(filenameIn, "-h") == 0) {
         printf("tlc - Typed LISP Compiler\nusage: tlc <filename>\nexample: tlc "
                "./main.tlisp");

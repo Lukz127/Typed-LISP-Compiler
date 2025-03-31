@@ -29,7 +29,7 @@
 
 (def pipeTexture Texture2D nil)
 (def playerTexture Texture2D nil)
-(LoadTexture pipeTexture "./resources/pipe-green.png")
+(LoadTexture :fileName "./resources/pipe-green.png" :texture pipeTexture)
 (LoadTexture playerTexture "./resources/yellowbird-midflap.png")
 (def pipe1 Pipe (Pipe (+ (* (% (rand) 12) 50) 25) (+ (* (% (rand) 13) 20) 400) (+ (% (rand) 70) 190)))
 (def pipe2 Pipe (Pipe (+ #(pipe1 x) (+ (* (% (rand) 8) 10) 300)) (+ (* (% (rand) 13) 20) 400) (+ (% (rand) 70) 220)))
