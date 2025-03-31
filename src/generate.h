@@ -13,7 +13,9 @@ char *toAbsolutePath(const char *relative_path, char *absolute_path,
 }
 
 typedef enum StaticType {
+    INT8,
     INT32,
+    UNSIGNED8,
     UNSIGNED32,
     UNSIGNED64,
     FLOAT,
@@ -66,6 +68,7 @@ struct ClassData {
     struct ClassVariableList *variables;
     struct ClassFunctionList *functions;
     size_t numVars;
+    size_t intSize;
 };
 
 struct FunctionArgType {
@@ -141,9 +144,9 @@ struct ContextData {
     struct VariableList *args;
     struct MacroArg *macroArgs;
     struct MacroRestArg *macroRestArg;
-    struct TypeData *returnType; // NULL if return is not allowed
-    LLVMValueRef *loopIndexVar;  // NULL if not in an indexed loop
-    LLVMValueRef **mallocedVarsToFree;
+    struct TypeData *returnType;    // NULL if return is not allowed
+    struct ValueData *loopIndexVar; // NULL if not in an indexed loop
+    struct VariableData **mallocedVarsToFree;
     bool isVarArg;
     bool unreachable;
 };

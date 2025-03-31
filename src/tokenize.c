@@ -66,8 +66,6 @@ int readToken(FILE *file, char **buffer, size_t *bufferSize, size_t bufferSkip,
             (ch == '"' && stopAtString)) {
 
             (*buffer)[len] = '\0';
-            printf("STOP--------- %d %d %c %s\n", stopAtString, allowSpace,
-                   (*buffer)[0], (*buffer));
             break;
         }
         if (ch == '"' && !stopAtString && allowSpace) {
@@ -78,6 +76,7 @@ int readToken(FILE *file, char **buffer, size_t *bufferSize, size_t bufferSkip,
         }
         if ((*buffer)[0] == '"' && ch == '\\') {
             char ch2 = fgetc(file);
+            (*currentCol)++;
             (*buffer)[len - 1] = processBackslash(ch2);
             if (ch2 == EOF) {
                 break;
@@ -99,8 +98,8 @@ int tokenize(struct Token *body, FILE *file) {
     int len = 0;
     size_t currentLine = 1;
     size_t currentCol = 1;
-    char *buffer = malloc(sizeof(char) * 128);
     size_t bufferSize = 128;
+    char *buffer = malloc(sizeof(char) * bufferSize);
     bool pushToken = true;
     bool closeParen = false;
     bool insideExpr = false;
@@ -120,7 +119,6 @@ int tokenize(struct Token *body, FILE *file) {
     struct Token token = (struct Token){NULL_TOKEN, NULL, 1, 1};
     while ((len = readToken(file, &buffer, &bufferSize, len, stopAtString,
                             &currentLine, &currentCol, lastTokenWasRef)) != 0) {
-        printf("%s\n", buffer);
         if (lastTokenWasRef && len == 1 && buffer[0] == ' ') {
             // stackSize--;
             // refCount = 0;
@@ -128,17 +126,26 @@ int tokenize(struct Token *body, FILE *file) {
             // lastTokenWasRef = false;
             // continue;
 
-            refCount--;
+            if (refCount > 0) {
+                refCount--;
+                immediateRefCount--;
+            }
             closeParen = true;
             len = 0;
         }
-        token.colNum -= len;
         lastTokenWasRef = false;
 
         if (buffer[len - 1] == ')' && buffer[0] != ';' && buffer[0] != '\"') {
             len--;
             buffer[len] = '\0';
             closeParen = true;
+        }
+
+        if ((token.lineNum != currentLine || token.colNum == 0) &&
+            currentCol != 0) {
+            token.lineNum = currentLine;
+            token.colNum = currentCol - len;
+            currentCol++;
         }
 
         if (buffer[0] == '"') {
@@ -181,11 +188,13 @@ int tokenize(struct Token *body, FILE *file) {
         } else if (buffer[0] == '(' || buffer[0] == '*' || buffer[0] == '#' ||
                    buffer[0] == '\'') {
             if (buffer[0] == '(') {
+                immediateRefCount = 0;
                 token.type = EXPR_TOKEN;
                 if (refCount > 0) {
                     insideExpr = true;
                 }
             } else if (buffer[0] == '\'') {
+                immediateRefCount = 0;
                 if (buffer[1] != '(') {
                     fprintf(stderr,
                             "ERROR on line %llu column %llu: to make a "
@@ -247,6 +256,12 @@ int tokenize(struct Token *body, FILE *file) {
                 closeParen &&
                     (baseStack[stackSize - 1]->type == REF_TOKEN ||
                      baseStack[stackSize - 1]->type == DE_REF_TOKEN)) {
+                if (immediateRefCount == 0) {
+                    immediateRefCount = 1;
+                }
+                if (refCount < immediateRefCount) {
+                    immediateRefCount = refCount;
+                }
                 stackSize -= immediateRefCount;
                 refCount -= immediateRefCount;
                 immediateRefCount = 0;
@@ -259,6 +274,12 @@ int tokenize(struct Token *body, FILE *file) {
             closeParen = false;
             stackSize--;
             if (refCount > 0 && insideExpr) {
+                if (immediateRefCount == 0) {
+                    immediateRefCount = 1;
+                }
+                if (refCount < immediateRefCount) {
+                    immediateRefCount = refCount;
+                }
                 stackSize -= immediateRefCount;
                 refCount -= immediateRefCount;
                 immediateRefCount = 0;
@@ -275,13 +296,17 @@ int tokenize(struct Token *body, FILE *file) {
 void printTokenSpaces(struct Token *token, int numSpaces) {
 
     if (token->type == INT_TOKEN) {
-        printf("%*sINT_TOKEN     %d\n", numSpaces, "", *(int *)token->data);
+        printf("%*sINT_TOKEN     %d | line %llu, col %llu\n", numSpaces, "",
+               *(int *)token->data, token->lineNum, token->colNum);
     } else if (token->type == FLOAT_TOKEN) {
-        printf("%*sFLOAT_TOKEN   %f\n", numSpaces, "", *(float *)token->data);
+        printf("%*sFLOAT_TOKEN   %f | line %llu, col %llu\n", numSpaces, "",
+               *(float *)token->data, token->lineNum, token->colNum);
     } else if (token->type == STRING_TOKEN) {
-        printf("%*sSTRING_TOKEN  %s\n", numSpaces, "", (char *)token->data);
+        printf("%*sSTRING_TOKEN  %s | line %llu, col %llu\n", numSpaces, "",
+               (char *)token->data, token->lineNum, token->colNum);
     } else if (token->type == IDENT_TOKEN) {
-        printf("%*sIDENT_TOKEN   %s\n", numSpaces, "", (char *)token->data);
+        printf("%*sIDENT_TOKEN   %s | line %llu, col %llu\n", numSpaces, "",
+               (char *)token->data, token->lineNum, token->colNum);
     } else if (token->type == EXPR_TOKEN) {
         printf("%*sEXPR_TOKEN:\n", numSpaces, "");
         size_t numTokens = stbds_arrlen((struct Token **)token->data);

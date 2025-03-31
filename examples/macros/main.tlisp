@@ -1,0 +1,40 @@
+(extern-fn printf '('(format *char) ... int))
+
+; Macros are defined using defmacro
+; (defmacro <macro_name> <list_of_arguments> <body> ...)
+; You must not specify the the argument type, only the name.
+; Macro arguments must be dereferenced to use. Think of it
+; like they are pointers to the variable. So if you pass in
+; a pointer to an int (so a non-dereferenced variable) you
+; must dereference it twice to get it's value in the macro.
+
+(defmacro increment '(variable)
+  (set #variable (+ ##variable 1)))
+
+(def x int 1)
+(printf "Before increment x=%d\n" #x)
+(increment x)
+(printf "After increment x=%d\n" #x)
+
+; (increment x) expands to:
+; (set x (+ #x 1))
+
+; You can also use a rest argument in the macro.
+; To access it, just dereference it and it will behave
+; as if you placed it in place.
+(defmacro myCustomUnless '(condition :rest body)
+  (when (not #condition)
+    #body))
+
+(myCustomUnless nil
+  (printf "myCustomUnlessWorks\n")
+  (printf "You can also access variables normally: x=%d\n" #x))
+; The above code expands to:
+; (when (not nil)  ; (not nil) is always t (true)
+;   (printf "myCustomUnlessWorks\n")
+;   (printf "You can also access variables normally: x=%d\n" #x))
+
+; You unfortunately can't use optional arguments.
+; This means that the following commented-out code is invalid:
+; (defmacro myMacroWithOptional (arg :optional optionalArg)
+;   (printf "optionalArg=%d" #optionalArg)) 

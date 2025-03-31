@@ -1,0 +1,58 @@
+; This file contains only the neccesary raylib bindings, not all raylib bindings
+
+(defclass Texture2D '()
+  :variables '(
+    '(id uint)
+    '(width int)
+    '(height int)
+    '(minimaps int)
+    '(format int)
+))
+
+(defclass Rectangle '()
+  :variables '(
+    '(x float)
+    '(y float)
+    '(width float)
+    '(height float)
+))
+
+(defclass Vector2 '()
+  :variables '(
+    '(x float)
+    '(y float)
+))
+
+(defclass Color '()
+  :variables '(
+    '(r uint8)
+    '(g uint8)
+    '(b uint8)
+    '(a uint8)
+))
+(def WHITE Color (Color 255 255 255 255))
+(def SKYBLUE Color (Color 135 206 235 255))
+(def BLACK Color (Color 0 0 0 255))
+
+(def KEY_SPACE int 32)
+
+(extern-fn SetTraceLogLevel '('(logLevel int) nil))
+(extern-fn InitWindow '('(width int) '(height int) '(title *char) nil))
+(extern-fn WindowShouldClose '(bool))
+(extern-fn CloseWindow '(nil))
+(extern-fn BeginDrawing '(nil))
+(extern-fn EndDrawing '(nil))
+(extern-fn SetTargetFPS '('(fps int) nil))
+
+(extern-fn ClearBackground '('(color Color) nil))
+(extern-fn DrawText '('(text *char) '(posX int) '(posY int) '(fontSize int) '(color Color) nil))
+(extern-fn DrawRectangle '('(posX int) '(posY int) '(width int) '(height int) '(color Color) nil))
+
+(extern-fn LoadTexture '('(texture Texture2D) '(fileName *char) nil))
+; this should be (extern-fn LoadTexture '('(fileName *char) Texture2D))
+; but I can't be bothered to make the compiler fully C ABI compliant
+
+(extern-fn DrawTexture '('(texture Texture2D) '(posX int) '(posY int) '(tint Color) nil))
+(extern-fn DrawTexturePro '('(texture Texture2D) '(source Rectangle) '(dest Rectangle) '(origin Vector2) '(rotation float) '(tint Color) nil))
+
+(extern-fn IsKeyPressed '('(key int) bool))

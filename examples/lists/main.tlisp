@@ -1,0 +1,76 @@
+(extern-fn printf '('(format *char) ... int))
+
+; The array type is defined by specifying the
+; item type and then the array length.
+(def myArray (array int 5) '(6 5 4 3 2))
+
+; The vector type is defined by just specifying
+; the item type
+(def myVector (vector int) '(2 3 4 5 6))
+
+; Both arrays and vectors are initialized using
+; the '() and placing items separated by spaces.
+; The compiler will automatically determine, if
+; it needs to initialize an array or a vector.
+
+; Items in list types (vector or array) can be
+; accessed using the "nth" function.
+; The list is passed in as a pointer.
+(def myArrayItem int (nth 2 myArray))   ; access the 3rd item
+(def myVectorItem int (nth 0 myVector)) ;access the 1st item
+
+; The list length can be accessed using the "length"
+; function. The function returns a pointer to the length
+; if the list is a vector or a string, otherwise it returns
+; an integer.
+(def myArrayLength uint (myArray length))
+(def myVectorLength uint #(myVector length))
+
+; The vector and string capacity can be accessed the
+; "capacity" function. It returns a pointer to the capacity.
+(def myVectorCapacity uint #(myVector capacity))
+
+(printf "myArrayItem=%d, myArrayLength=%u\n" #myArrayItem #myArrayLength)
+(printf "myVectorItem=%d, myVectorLength=%u, myVectorCapacity=%u\n" #myVectorItem #myVectorLength #myVectorCapacity)
+
+; You can append elements to vectors using the push function.
+; The first argument is the pointer to the vector and the
+; second argument is the item
+(push myVector 10)
+
+; Lists can be looped using the "dolist" function.
+; The pointer to the array is the first argument and
+; the name of the item variable is the second argument
+(printf "\n")
+(def x int 0)
+(dolist myArray item
+  (printf "myArray[%d] = %d\n" #x #item)
+  (set x (+ #x 1)))
+
+(printf "\n")
+(set x 0)
+(dolist myVector item
+  (printf "myVector[%d] = %d\n" #x #item)
+  (set x (+ #x 1)))
+
+; You can also pop elements from the back of the vectors
+; using the pop function. The first argument is the pointer
+; to the vector and it returns the popped element (not a pointer
+; but the value)
+(def poppedElement int (pop myVector))
+(printf "\n")
+(printf "poppedElement=%d\n" #poppedElement)
+
+; The capacity and length will be automatically updated if the
+; elements are popped or pushed.
+
+; You can also pop elements without storing the popped item
+(pop myVector)
+(pop myVector)
+
+; To visualize the item popping:
+(printf "\n")
+(set x 0)
+(dolist myVector item
+  (printf "myVector[%d] = %d\n" #x #item)
+  (set x (+ #x 1)))

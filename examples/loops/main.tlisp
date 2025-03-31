@@ -1,0 +1,142 @@
+(extern-fn printf '('(format *char) ... int))
+
+;** DOTIMES LOOP **;
+; (dotimes <number_of_times> '(<index_variable_name> <index_start_value>) :optional <increment_size> <body1> ...)
+(printf "First dotimes loop:\n")
+(dotimes 5 '(x 1)
+  (printf "dotimes x = %d\n" #x))
+(printf "\n")
+
+; It iterates until the index variable is greater than
+; <number_of_times>*<increment_size>+<index_start_value>-1
+; For example for (dotimes 5 '(x 1) ...) iterates until
+; x = 5*1+1-1 (so until x > 5).
+; This means you can also use floats and doubles
+(printf "Second dotimes loop:\n")
+(dotimes 5 '(x 0.5) :increment 0.5
+  (printf "dotimes x = %f\n" (#x double)))  ; printf with %f expects a double
+(printf "\n")
+
+; You can also set the index variable
+(printf "Third dotimes:\n")
+(dotimes 5 '(x 0)
+  (printf "dotimes x = %d\n" #x)
+  (set x (+ #x 1)))
+(printf "\n")
+
+; You can use (break) to immediately end the current loop.
+; If you are in a nested loop, it only ends the current loop, 
+; not all loops.
+(printf "Fifth dotimes loop:\n")
+(dotimes 5 '(x 0)
+  (when (= #x 3)
+    (break))
+  (printf "dotimes x = %d\n" #x))
+(printf "\n")
+
+; You can use (continue :optional <number_of_iterations>) to skip
+; one or more iterations
+(printf "Sixth dotimes loop:\n")
+(dotimes 5 '(x 0)
+  (when (= #x 2)
+    (continue))
+  (printf "dotimes x = %d\n" #x))
+(printf "\n")
+
+(printf "Seventh dotimes loop:\n")
+(dotimes 5 '(x 0)
+  (when (= #x 2)
+    (continue 2))
+  (printf "dotimes x = %d\n" #x))
+(printf "\n")
+
+
+
+;** WHILE LOOP **;
+; The while loop loops until the condition is nil (false).
+; (while <condition> <body1> ...)
+(def x int 1)
+(printf "First while loop:\n")
+(while (not (= #x 6))
+  (printf "While x = %d\n" #x)
+  (set x (+ #x 1)))
+(printf "\n")
+
+; You can also use (break) like in the dotimes loop
+(set x 1)
+(printf "Second while loop:\n")
+(while (not (= #x 6))
+  (when (= #x 4)
+    (break))
+  (printf "While x = %d\n" #x)
+  (set x (+ #x 1)))
+(printf "\n")
+
+; You can also use (continue) like in the dotimes loop, but
+; you can't use number_of_times
+(set x 1)
+(printf "Third while loop:\n")
+(while (not (= #x 6))
+  (when (= #x 3)
+    ; make sure you update the condition, so you don't end up in an infinite loop:
+    (set x (+ #x 1))
+    (continue))
+  (printf "While x = %d\n" #x)
+  (set x (+ #x 1)))
+(printf "\n")
+
+
+
+;** DOLIST LOOP **;
+; The dolist loop is like the dotimes loop, but it iterates
+; over a vector or an array and gives you the value of the
+; nth element of the list at the current iteration.
+; The dolist loop doesn't give you the current index, only the item.
+; (dolist <pointer_to_the_vector_or_array> <item_variable_name> <body1> ...)
+(def myArray (array int 5) '(6 5 4 3 2))
+(printf "First dolist loop:\n")
+(dolist myArray item
+  (printf "dolist item = %d\n" #item))
+(printf "\n")
+
+; You can do anything with the item variable and it
+; won't affect the loop. But be aware that the item
+; variable is a pointer to the item in the lisp, so it
+; will change the list
+(printf "Second dolist loop:\n")
+(dolist myArray item
+  (set item (- #item 1))
+  (printf "dolist item = %d\n" #item)
+  (set item 10))
+(printf "\n")
+
+(printf "Third dolist loop:\n")
+(dolist myArray item
+  (printf "dolist item = %d\n" #item))
+(printf "\n")
+
+; You can also use (break) like in the dotimes loop
+(set myArray '(5 4 3 2 1))
+(printf "Fourth dolist loop:\n")
+(dolist myArray item
+  (when (= #item 2)
+    (break))
+  (printf "dolist item = %d\n" #item))
+(printf "\n")
+
+; You can also use (continue :optional <number_of_iterations>) like in the dotimes loop
+(printf "Fifth dolist loop:\n")
+(dolist myArray item
+  (when (= #item 3)
+    (continue))
+  (printf "dolist item = %d\n" #item))
+(printf "\n")
+
+(printf "Sixth dolist loop:\n")
+(set x 2)
+(dolist myArray item
+  (when (= #item 3)
+    ; you can also use variables or any other non-constant values to skip x iterations
+    (continue #x))
+  (printf "dolist item = %d\n" #item))
+(printf "\n")

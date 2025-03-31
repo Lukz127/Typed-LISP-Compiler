@@ -293,13 +293,14 @@ bool outlineClassDefine(struct Token *token, struct ModuleData *module,
     tokens2 = (struct Token **)tokens[4]->data;
     size_t tokens2Len = stbds_arrlen(tokens2);
 
+    size_t intSize = 0;
     for (size_t i = 0; i < tokens2Len; i++) {
         if (tokens2[i]->type != LIST_TOKEN) {
             fprintf(stderr,
                     "ERROR on line %llu column %llu: Expected a list with the "
                     "variable name, type and optionally the default value\n",
                     tokens2[i]->lineNum, tokens2[i]->colNum);
-            return false;
+            return NULL;
         }
         struct Token **tokens3 = (struct Token **)tokens2[i]->data;
         size_t tokens3Len = stbds_arrlen(tokens3);
@@ -308,19 +309,42 @@ bool outlineClassDefine(struct Token *token, struct ModuleData *module,
                     "ERROR on line %llu column %llu: Expected a list with the "
                     "variable name and type\n",
                     tokens2[i]->lineNum, tokens2[i]->colNum);
-            return false;
+            return NULL;
         }
         if (tokens3[0]->type != IDENT_TOKEN) {
             fprintf(stderr,
                     "ERROR on line %llu column %llu: Expected an identifier\n",
                     tokens3[0]->lineNum, tokens3[0]->colNum);
-            return false;
+            return NULL;
         }
 
         char *varName = (char *)tokens3[0]->data;
         struct TypeData *type = getType(tokens3[1], module);
         if (type == NULL) {
-            return false;
+            return NULL;
+        }
+        if (type->type == CHAR || type->type == UNSIGNED8 ||
+            type->type == INT8 || type->type == BOOL) {
+            intSize += 8;
+        } else if (type->type == INT32 || type->type == UNSIGNED32 ||
+                   type->type == FLOAT) {
+            intSize += 32;
+        } else if (type->type == POINTER || type->type == UNSIGNED64 ||
+                   type->type == DOUBLE) {
+            intSize += 64;
+        } else if (type->type == CLASS) {
+            if (stbds_shgetp_null(module->classes, (char *)type->name) ==
+                NULL) {
+                fprintf(stderr,
+                        "ERROR on line %llu column %llu: Class \"%s\" doesn't "
+                        "exist\n",
+                        tokens2[i]->lineNum, tokens2[i]->colNum,
+                        (char *)type->name);
+                return NULL;
+            }
+            struct ClassData *classData =
+                stbds_shget(module->classes, (char *)type->name);
+            intSize += classData->intSize;
         }
         if (stbds_shgetp_null(variables, varName) != NULL) {
             struct ClassVariableData var = stbds_shget(variables, varName);
@@ -329,7 +353,7 @@ bool outlineClassDefine(struct Token *token, struct ModuleData *module,
                         "ERROR on line %llu column %llu: Class variable \"%s\" "
                         "already defined\n",
                         tokens2[i]->lineNum, tokens2[i]->colNum, varName);
-                return false;
+                return NULL;
             }
             stbds_shput(variables, varName, var);
             isVarInherited[var.index] = false;
@@ -337,7 +361,7 @@ bool outlineClassDefine(struct Token *token, struct ModuleData *module,
         }
         LLVMTypeRef *llvmType = generateType(type, module);
         if (llvmType == NULL) {
-            return false;
+            return NULL;
         }
         if (type->type == STRING || type->type == CLASS ||
             type->type == VECTOR || type->type == MAP ||
@@ -361,8 +385,8 @@ bool outlineClassDefine(struct Token *token, struct ModuleData *module,
     classType->type = CLASS;
     classType->name = className;
     classType->length = -1;
-    *data =
-        (struct ClassData){classType, llvmStructType, variables, NULL, numVars};
+    *data = (struct ClassData){classType, llvmStructType, variables,
+                               NULL,      numVars,        intSize};
     stbds_shput(module->classes, className, data);
     return true;
 }
@@ -394,8 +418,8 @@ bool outlineImport(struct Token *token, struct ModuleData *module,
 
     char *relFilePath2 = (char *)((struct Token **)token->data)[1]->data;
     size_t pathLen = strlen(relFilePath2);
-    char *relFilePath = malloc((pathLen + 5) * sizeof(char));
-    sprintf_s(relFilePath, (pathLen + 5), "%s.sao", relFilePath2);
+    char *relFilePath = malloc((pathLen + 7) * sizeof(char));
+    sprintf_s(relFilePath, (pathLen + 7), "%s.tlisp", relFilePath2);
     char *filePath = calloc(FILENAME_MAX, sizeof(char));
     if (toAbsolutePath(relFilePath, filePath, FILENAME_MAX) == NULL) {
         fprintf(stderr,
